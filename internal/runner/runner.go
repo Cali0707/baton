@@ -97,6 +97,7 @@ func (r *Runner) Execute(ctx context.Context, run *store.Run, item *store.InboxI
 
 	// Run the agent
 	agentRunner := agent.NewRunner(agentDef, r.safety, r.logger)
+	defer tracker.Close()
 	result, err := agentRunner.Run(ctx, wtPath, prompt, tracker)
 
 	completedAt := time.Now().UTC()
@@ -115,7 +116,6 @@ func (r *Runner) Execute(ctx context.Context, run *store.Run, item *store.InboxI
 	}
 	r.store.UpdateRun(ctx, run)
 
-	tracker.Close()
 	return nil
 }
 
