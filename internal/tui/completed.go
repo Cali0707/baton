@@ -12,19 +12,17 @@ import (
 	"github.com/Cali0707/baton/internal/workflow"
 )
 
-// completedListModel shows the history of completed agent sessions.
+// completedListModel shows the history of completed agent runs.
 type completedListModel struct {
-	table    table.Model
-	sessions []*store.PersistedSession
-	width    int
-	height   int
+	table  table.Model
+	runs   []*store.Run
+	width  int
+	height int
 }
 
 func newCompletedListModel() completedListModel {
 	columns := []table.Column{
-		{Title: "Repo", Width: 20},
-		{Title: "#", Width: 6},
-		{Title: "Type", Width: 12},
+		{Title: "Workflow", Width: 16},
 		{Title: "Agent", Width: 10},
 		{Title: "Status", Width: 12},
 		{Title: "Date", Width: 20},
@@ -51,26 +49,24 @@ func newCompletedListModel() completedListModel {
 	return completedListModel{table: t}
 }
 
-func (m *completedListModel) setSessions(sessions []*store.PersistedSession) {
-	m.sessions = sessions
-	rows := make([]table.Row, len(sessions))
-	for i, s := range sessions {
+func (m *completedListModel) setRuns(runs []*store.Run) {
+	m.runs = runs
+	rows := make([]table.Row, len(runs))
+	for i, r := range runs {
 		rows[i] = table.Row{
-			s.Owner + "/" + s.Repo,
-			fmt.Sprintf("%d", s.IssueNumber),
-			workflow.WorkflowDisplayName(s.WorkflowType),
-			s.AgentName,
-			string(s.Status),
-			s.StartedAt.Local().Format("2006-01-02 15:04"),
+			workflow.WorkflowDisplayName(workflow.WorkflowType(r.WorkflowType)),
+			r.AgentName,
+			string(r.Status),
+			r.StartedAt.Local().Format("2006-01-02 15:04"),
 		}
 	}
 	m.table.SetRows(rows)
 }
 
-func (m *completedListModel) selectedSession() *store.PersistedSession {
+func (m *completedListModel) selectedRun() *store.Run {
 	idx := m.table.Cursor()
-	if idx >= 0 && idx < len(m.sessions) {
-		return m.sessions[idx]
+	if idx >= 0 && idx < len(m.runs) {
+		return m.runs[idx]
 	}
 	return nil
 }
@@ -90,10 +86,10 @@ func (m completedListModel) Update(msg tea.Msg) (completedListModel, tea.Cmd) {
 
 func (m completedListModel) View() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Completed Sessions"))
+	b.WriteString(titleStyle.Render("Completed Runs"))
 	b.WriteString("\n")
-	if len(m.sessions) == 0 {
-		b.WriteString("\n  No completed sessions yet.\n")
+	if len(m.runs) == 0 {
+		b.WriteString("\n  No completed runs yet.\n")
 	} else {
 		b.WriteString(m.table.View())
 	}
@@ -102,10 +98,10 @@ func (m completedListModel) View() string {
 	return b.String()
 }
 
-// completedDetailModel shows details of a single completed session.
+// completedDetailModel shows details of a single completed run.
 type completedDetailModel struct {
 	viewport viewport.Model
-	session  *store.PersistedSession
+	run      *store.Run
 	entries  []store.OutputEntry
 	ready    bool
 	width    int
@@ -116,8 +112,8 @@ func newCompletedDetailModel() completedDetailModel {
 	return completedDetailModel{}
 }
 
-func (m *completedDetailModel) setSession(s *store.PersistedSession) {
-	m.session = s
+func (m *completedDetailModel) setRun(r *store.Run) {
+	m.run = r
 	m.entries = nil
 	m.updateContent()
 }
@@ -128,32 +124,30 @@ func (m *completedDetailModel) setEntries(entries []store.OutputEntry) {
 }
 
 func (m *completedDetailModel) updateContent() {
-	if m.session == nil {
+	if m.run == nil {
 		return
 	}
-	s := m.session
+	r := m.run
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Session: %s\n", s.ID))
-	b.WriteString(fmt.Sprintf("Repo:    %s/%s\n", s.Owner, s.Repo))
-	b.WriteString(fmt.Sprintf("Issue:   #%d — %s\n", s.IssueNumber, s.IssueTitle))
-	b.WriteString(fmt.Sprintf("Type:    %s\n", workflow.WorkflowDisplayName(s.WorkflowType)))
-	b.WriteString(fmt.Sprintf("Agent:   %s\n", s.AgentName))
-	b.WriteString(fmt.Sprintf("Status:  %s\n", s.Status))
-	b.WriteString(fmt.Sprintf("Started: %s\n", s.StartedAt.Local().Format("2006-01-02 15:04:05")))
-	if s.CompletedAt != nil {
-		b.WriteString(fmt.Sprintf("Ended:   %s\n", s.CompletedAt.Local().Format("2006-01-02 15:04:05")))
+	b.WriteString(fmt.Sprintf("Run:      %d\n", r.ID))
+	b.WriteString(fmt.Sprintf("Type:     %s\n", workflow.WorkflowDisplayName(workflow.WorkflowType(r.WorkflowType))))
+	b.WriteString(fmt.Sprintf("Agent:    %s\n", r.AgentName))
+	b.WriteString(fmt.Sprintf("Status:   %s\n", r.Status))
+	b.WriteString(fmt.Sprintf("Started:  %s\n", r.StartedAt.Local().Format("2006-01-02 15:04:05")))
+	if r.CompletedAt != nil {
+		b.WriteString(fmt.Sprintf("Ended:    %s\n", r.CompletedAt.Local().Format("2006-01-02 15:04:05")))
 	}
-	b.WriteString(fmt.Sprintf("Worktree: %s\n", s.WorktreePath))
+	b.WriteString(fmt.Sprintf("Worktree: %s\n", r.WorktreePath))
 	b.WriteString("\n")
 
-	if s.ResumeCmd != "" {
+	if r.ResumeCmd != "" {
 		b.WriteString("Resume command:\n")
-		b.WriteString(fmt.Sprintf("  cd %s && %s\n", s.WorktreePath, s.ResumeCmd))
+		b.WriteString(fmt.Sprintf("  cd %s && %s\n", r.WorktreePath, r.ResumeCmd))
 	}
 
 	if len(m.entries) > 0 {
-		b.WriteString("\n── Agent Output ─────────────────────────────────────\n\n")
+		b.WriteString("\n-- Agent Output ------------------------------------\n\n")
 		b.WriteString(agentOutputStyle.Render(renderEntries(m.entries)))
 	}
 
@@ -182,16 +176,16 @@ func (m completedDetailModel) Update(msg tea.Msg) (completedDetailModel, tea.Cmd
 }
 
 func (m completedDetailModel) View() string {
-	if m.session == nil {
-		return "No session selected"
+	if m.run == nil {
+		return "No run selected"
 	}
 
 	var b strings.Builder
-	badge := completedBadge.Render(string(m.session.Status))
-	if m.session.Status == store.StatusFailed {
+	badge := completedBadge.Render(string(m.run.Status))
+	if m.run.Status == store.StatusFailed {
 		badge = failedBadge.Render("FAILED")
 	}
-	b.WriteString(titleStyle.Render(fmt.Sprintf("Session %s ", m.session.ID)) + badge)
+	b.WriteString(titleStyle.Render(fmt.Sprintf("Run %d ", m.run.ID)) + badge)
 	b.WriteString("\n")
 	b.WriteString(m.viewport.View())
 	b.WriteString("\n")

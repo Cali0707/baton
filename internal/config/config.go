@@ -91,6 +91,12 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("loading config %s: %w", path, err)
 	}
 
+	if cfg.General.DataDir == "" {
+		cfg.General.DataDir = DefaultDataDir()
+	}
+	if cfg.General.DataDir == "" {
+		return nil, fmt.Errorf("could not determine data directory: set data_dir in config or ensure $HOME is set")
+	}
 	cfg.General.DataDir = expandPath(cfg.General.DataDir)
 
 	for i := range cfg.Repos {
@@ -148,6 +154,19 @@ func (c *Config) AgentForRepo(repo RepoConfig) string {
 
 func (c *Config) SessionsDir() string {
 	return filepath.Join(c.General.DataDir, "sessions")
+}
+
+// DefaultDataDir returns the default data directory for baton,
+// following XDG conventions (~/.local/share/baton).
+func DefaultDataDir() string {
+	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
+		return filepath.Join(xdg, "baton")
+	}
+	home, _ := os.UserHomeDir()
+	if home != "" {
+		return filepath.Join(home, ".local", "share", "baton")
+	}
+	return ""
 }
 
 func DefaultConfigDir() string {
