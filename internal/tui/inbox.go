@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -8,22 +9,23 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/Cali0707/baton/internal/github"
+	"github.com/Cali0707/baton/internal/store"
 )
 
 type inboxModel struct {
-	table table.Model
-	items []github.WorkItem
-	width int
+	table  table.Model
+	items  []*store.InboxItem
+	width  int
 	height int
 }
 
 func newInboxModel() inboxModel {
 	columns := []table.Column{
+		{Title: "St", Width: 5},
 		{Title: "Type", Width: 6},
 		{Title: "Repo", Width: 20},
 		{Title: "#", Width: 6},
-		{Title: "Title", Width: 40},
+		{Title: "Title", Width: 36},
 		{Title: "Author", Width: 15},
 		{Title: "Updated", Width: 12},
 	}
@@ -49,30 +51,55 @@ func newInboxModel() inboxModel {
 	return inboxModel{table: t}
 }
 
-func (m *inboxModel) setItems(items []github.WorkItem) {
+func (m *inboxModel) setItems(items []*store.InboxItem) {
 	m.items = items
 	rows := make([]table.Row, len(items))
 	for i, item := range items {
 		kind := "ISSUE"
-		if item.Kind == github.KindPR {
+		if item.Kind == "pr" {
 			kind = "PR"
 		}
+		status := statusLabel(item.Status)
+		number := ""
+		if item.Number != nil {
+			number = fmt.Sprintf("%d", *item.Number)
+		}
+		updatedAt := item.UpdatedAt
+		if item.SourceUpdatedAt != nil {
+			updatedAt = *item.SourceUpdatedAt
+		}
 		rows[i] = table.Row{
+			status,
 			kind,
 			item.Owner + "/" + item.Repo,
-			fmt.Sprintf("%d", item.Number),
-			truncate(item.Title, 38),
+			number,
+			truncate(item.Title, 34),
 			item.Author,
-			relativeTime(item.UpdatedAt),
+			relativeTime(updatedAt),
 		}
 	}
 	m.table.SetRows(rows)
 }
 
-func (m *inboxModel) selectedItem() *github.WorkItem {
+func statusLabel(s store.ItemStatus) string {
+	switch s {
+	case store.ItemStatusNew:
+		return "NEW"
+	case store.ItemStatusInProgress:
+		return "RUN"
+	case store.ItemStatusDone:
+		return "DONE"
+	case store.ItemStatusArchived:
+		return "ARCH"
+	default:
+		return string(s)
+	}
+}
+
+func (m *inboxModel) selectedItem() *store.InboxItem {
 	idx := m.table.Cursor()
 	if idx >= 0 && idx < len(m.items) {
-		return &m.items[idx]
+		return m.items[idx]
 	}
 	return nil
 }
@@ -89,7 +116,7 @@ func (m inboxModel) View() string {
 	b.WriteString("\n")
 	b.WriteString(m.table.View())
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("j/k navigate • enter view • a analyze • s running • r refresh • tab history • q quit"))
+	b.WriteString(helpStyle.Render("j/k navigate • enter view • w workflow • a archive • A archived • s running • r refresh • tab history • q quit"))
 	return b.String()
 }
 
@@ -97,7 +124,14 @@ func (m *inboxModel) setSize(w, h int) {
 	m.width = w
 	m.height = h
 	m.table.SetWidth(w)
-	m.table.SetHeight(h - 5) // account for title + help
+	m.table.SetHeight(h - 5)
+}
+
+// ParseLabels returns the labels from the JSON-encoded labels field.
+func ParseLabels(labelsJSON string) []string {
+	var labels []string
+	json.Unmarshal([]byte(labelsJSON), &labels)
+	return labels
 }
 
 func truncate(s string, max int) string {

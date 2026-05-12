@@ -7,7 +7,8 @@ type keyMap struct {
 	Down     key.Binding
 	Enter    key.Binding
 	Back     key.Binding
-	Analyze  key.Binding
+	Workflow key.Binding
+	Archive  key.Binding
 	Refresh  key.Binding
 	Tab      key.Binding
 	Quit     key.Binding
@@ -31,9 +32,13 @@ var keys = keyMap{
 		key.WithKeys("esc"),
 		key.WithHelp("esc", "back"),
 	),
-	Analyze: key.NewBinding(
+	Workflow: key.NewBinding(
+		key.WithKeys("w"),
+		key.WithHelp("w", "workflow"),
+	),
+	Archive: key.NewBinding(
 		key.WithKeys("a"),
-		key.WithHelp("a", "analyze"),
+		key.WithHelp("a", "archive"),
 	),
 	Refresh: key.NewBinding(
 		key.WithKeys("r"),

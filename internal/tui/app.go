@@ -13,11 +13,11 @@ import (
 	acp "github.com/coder/acp-go-sdk"
 	"github.com/Cali0707/baton/internal/agent"
 	"github.com/Cali0707/baton/internal/config"
-	ghclient "github.com/Cali0707/baton/internal/github"
+	"github.com/Cali0707/baton/internal/runner"
+	"github.com/Cali0707/baton/internal/source"
 	"github.com/Cali0707/baton/internal/store"
+	bsync "github.com/Cali0707/baton/internal/sync"
 	"github.com/Cali0707/baton/internal/workflow"
-	"github.com/Cali0707/baton/internal/worktree"
-	"github.com/google/uuid"
 )
 
 type viewState int
@@ -32,13 +32,14 @@ const (
 	viewCompletedList
 	viewCompletedDetail
 	viewRunningList
+	viewArchivedList
 )
 
 // activeAgent holds per-run state for a background agent.
 type activeAgent struct {
-	sessionID string
-	session   *store.PersistedSession
-	item      *ghclient.WorkItem
+	runID     int64
+	run       *store.Run
+	item      *store.InboxItem
 	tracker   *agent.SessionTracker
 	cancel    context.CancelFunc
 	view      agentViewModel
@@ -54,6 +55,7 @@ type Model struct {
 	detail          detailModel
 	completedList   completedListModel
 	completedDetail completedDetailModel
+	archivedList    archivedListModel
 
 	// Workflow selection state
 	workflowOptions []workflow.WorkflowType
@@ -64,20 +66,22 @@ type Model struct {
 	agentCursor  int
 
 	// Dependencies
-	cfg      *config.Config
-	ghClient *ghclient.Client
-	wtMgr    *worktree.Manager
-	store    *store.Store
-	logger   *slog.Logger
+	cfg    *config.Config
+	source source.Source
+	db     store.Store
+	syncer bsync.SyncService
+	runner *runner.Runner
+	logger *slog.Logger
 
 	// Multi-agent run state
-	activeAgents map[string]*activeAgent
-	focusedAgent string   // session ID of currently attached agent
-	runningOrder []string // ordered session IDs for the running list
+	activeAgents  map[int64]*activeAgent
+	focusedAgent  int64  // run ID of currently attached agent
+	runningOrder  []int64
 	runningCursor int
 
 	// Navigation context
-	currentItem *ghclient.WorkItem
+	currentItem  *store.InboxItem
+	previousView viewState
 
 	// Dimensions
 	width  int
@@ -85,11 +89,12 @@ type Model struct {
 
 	// Loading state
 	loading bool
+	syncing bool
 	spinner spinner.Model
 	errMsg  string
 }
 
-func NewModel(cfg *config.Config, ghClient *ghclient.Client, sessionStore *store.Store, logger *slog.Logger) Model {
+func NewModel(cfg *config.Config, db store.Store, syncer bsync.SyncService, source source.Source, runner *runner.Runner, logger *slog.Logger) Model {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 
@@ -99,20 +104,23 @@ func NewModel(cfg *config.Config, ghClient *ghclient.Client, sessionStore *store
 		detail:          newDetailModel(),
 		completedList:   newCompletedListModel(),
 		completedDetail: newCompletedDetailModel(),
+		archivedList:    newArchivedListModel(),
 		cfg:             cfg,
-		ghClient:        ghClient,
-		wtMgr:           worktree.NewManager(),
-		store:           sessionStore,
+		source:          source,
+		db:              db,
+		syncer:          syncer,
+		runner:          runner,
 		logger:          logger,
 		spinner:         s,
-		activeAgents:    make(map[string]*activeAgent),
+		activeAgents:    make(map[int64]*activeAgent),
 	}
 }
 
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
-		m.loadWorkItems(),
-		m.loadCompletedSessions(),
+		m.loadItemsFromDB(),
+		m.syncFromSources(),
+		m.loadCompletedRuns(),
 		m.spinner.Tick,
 	)
 }
@@ -128,6 +136,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.detail.setSize(msg.Width, msg.Height)
 		m.completedList.setSize(msg.Width, msg.Height)
 		m.completedDetail.setSize(msg.Width, msg.Height)
+		m.archivedList.setSize(msg.Width, msg.Height)
 		for _, aa := range m.activeAgents {
 			aa.view.setSize(msg.Width, msg.Height)
 		}
@@ -147,58 +156,73 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.errMsg = ""
 		}
 
-	case CommentsLoaded:
+	case SyncComplete:
+		m.syncing = false
+		if msg.Err != nil {
+			m.errMsg = "sync: " + msg.Err.Error()
+		} else {
+			m.errMsg = ""
+			// Reload from DB to pick up any new/updated items.
+			cmds = append(cmds, m.loadItemsFromDB())
+		}
+
+	case DetailLoaded:
 		if msg.Err != nil {
 			m.errMsg = msg.Err.Error()
-		} else {
-			m.detail.setComments(msg.Comments)
-			if m.currentItem != nil && msg.Diff != "" {
-				m.currentItem.Diff = msg.Diff
+		} else if msg.Detail != nil {
+			m.detail.setComments(msg.Detail.Comments)
+			if msg.Detail.Diff != "" {
+				m.detail.setDiff(msg.Detail.Diff)
 			}
 		}
 
 	case AgentUpdateMsg:
-		if aa, ok := m.activeAgents[msg.SessionID]; ok {
+		if aa, ok := m.activeAgents[msg.RunID]; ok {
 			aa.view.appendUpdate(msg.Update)
 			if entry := makeOutputEntry(msg.Update); entry != nil {
-				m.store.AppendEntry(msg.SessionID, *entry)
+				m.db.AppendEntry(msg.RunID, *entry)
 			}
-			// Re-invoke listener to keep streaming
-			cmds = append(cmds, m.listenForUpdates(msg.SessionID, aa.tracker))
+			cmds = append(cmds, m.listenForUpdates(msg.RunID, aa.tracker))
 		}
 
 	case AgentDoneMsg:
-		if aa, ok := m.activeAgents[msg.SessionID]; ok {
+		if aa, ok := m.activeAgents[msg.RunID]; ok {
 			aa.view.setDone()
-			delete(m.activeAgents, msg.SessionID)
-			m.removeFromRunningOrder(msg.SessionID)
+			delete(m.activeAgents, msg.RunID)
+			m.removeFromRunningOrder(msg.RunID)
 
 			if msg.Err != nil {
 				m.errMsg = msg.Err.Error()
 			}
-			if m.focusedAgent == msg.SessionID {
-				// User is watching this agent — show completed detail
-				m.focusedAgent = ""
-				if msg.Session != nil {
-					m.completedDetail.setSession(msg.Session)
+			if m.focusedAgent == msg.RunID {
+				m.focusedAgent = 0
+				if msg.Run != nil {
+					m.completedDetail.setRun(msg.Run)
 					m.state = viewCompleted
-					cmds = append(cmds, m.loadSessionOutput(msg.Session.ID))
+					cmds = append(cmds, m.loadRunOutput(msg.Run.ID))
 				} else {
 					m.state = viewInbox
 				}
 			}
-			cmds = append(cmds, m.loadCompletedSessions())
+			cmds = append(cmds, m.loadCompletedRuns())
 		}
 
 	case SessionOutputLoaded:
 		if msg.Err != nil {
 			m.errMsg = msg.Err.Error()
-		} else if m.completedDetail.session != nil && m.completedDetail.session.ID == msg.SessionID {
+		} else if m.completedDetail.run != nil && m.completedDetail.run.ID == msg.RunID {
 			m.completedDetail.setEntries(msg.Entries)
 		}
 
-	case completedSessionsLoaded:
-		m.completedList.setSessions(msg.sessions)
+	case completedRunsLoaded:
+		m.completedList.setRuns(msg.runs)
+
+	case archivedItemsLoaded:
+		if msg.err != nil {
+			m.errMsg = msg.err.Error()
+		} else {
+			m.archivedList.setItems(msg.items)
+		}
 
 	case ErrorMsg:
 		m.errMsg = msg.Err.Error()
@@ -227,6 +251,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.completedList, cmd = m.completedList.Update(msg)
 		cmds = append(cmds, cmd)
+	case viewArchivedList:
+		var cmd tea.Cmd
+		m.archivedList, cmd = m.archivedList.Update(msg)
+		cmds = append(cmds, cmd)
 	case viewCompletedDetail, viewCompleted:
 		var cmd tea.Cmd
 		m.completedDetail, cmd = m.completedDetail.Update(msg)
@@ -246,26 +274,34 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case msg.String() == "enter":
 			if item := m.inbox.selectedItem(); item != nil {
 				m.currentItem = item
+				m.previousView = viewInbox
 				m.detail.setItem(item)
 				m.state = viewDetail
-				return m, m.loadComments(item)
+				return m, m.loadDetail(item)
 			}
-		case msg.String() == "a":
+		case msg.String() == "w":
 			if item := m.inbox.selectedItem(); item != nil {
 				if m.isItemBeingAnalyzed(item) {
-					m.errMsg = fmt.Sprintf("#%d is already being analyzed", item.Number)
+					m.errMsg = fmt.Sprintf("#%d is already being analyzed", safeNumber(item))
 					return m, nil
 				}
 				m.currentItem = item
 				m.detail.setItem(item)
 				return m.startWorkflowSelect(item)
 			}
+		case msg.String() == "a":
+			if item := m.inbox.selectedItem(); item != nil {
+				return m, m.archiveItem(item)
+			}
 		case msg.String() == "r":
-			m.loading = true
-			return m, m.loadWorkItems()
+			m.syncing = true
+			return m, tea.Batch(m.spinner.Tick, m.syncFromSources())
 		case msg.String() == "tab":
 			m.state = viewCompletedList
 			return m, nil
+		case msg.String() == "A":
+			m.state = viewArchivedList
+			return m, m.loadArchivedItems()
 		case msg.String() == "s":
 			if len(m.activeAgents) > 0 {
 				m.runningCursor = 0
@@ -281,15 +317,20 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case viewDetail:
 		switch {
 		case msg.String() == "esc":
-			m.state = viewInbox
+			m.state = m.previousView
 			return m, nil
-		case msg.String() == "a":
+		case msg.String() == "w":
 			if m.currentItem != nil {
 				if m.isItemBeingAnalyzed(m.currentItem) {
-					m.errMsg = fmt.Sprintf("#%d is already being analyzed", m.currentItem.Number)
+					m.errMsg = fmt.Sprintf("#%d is already being analyzed", safeNumber(m.currentItem))
 					return m, nil
 				}
 				return m.startWorkflowSelect(m.currentItem)
+			}
+		case msg.String() == "a":
+			if m.currentItem != nil {
+				m.state = m.previousView
+				return m, m.archiveItem(m.currentItem)
 			}
 		case msg.String() == "q":
 			m.cancelAllAgents()
@@ -345,16 +386,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case viewAgentRunning:
 		switch {
 		case msg.String() == "esc":
-			// Detach — agent keeps running in background
-			m.focusedAgent = ""
+			m.focusedAgent = 0
 			m.state = viewInbox
 			return m, nil
 		case msg.String() == "x":
-			// Cancel this agent and return to inbox
 			if aa, ok := m.activeAgents[m.focusedAgent]; ok {
 				aa.cancel()
 			}
-			m.focusedAgent = ""
+			m.focusedAgent = 0
 			m.state = viewInbox
 			return m, nil
 		default:
@@ -380,17 +419,17 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case msg.String() == "enter":
 			if m.runningCursor < len(m.runningOrder) {
-				sid := m.runningOrder[m.runningCursor]
-				if _, ok := m.activeAgents[sid]; ok {
-					m.focusedAgent = sid
+				rid := m.runningOrder[m.runningCursor]
+				if _, ok := m.activeAgents[rid]; ok {
+					m.focusedAgent = rid
 					m.state = viewAgentRunning
 				}
 			}
 			return m, nil
 		case msg.String() == "x":
 			if m.runningCursor < len(m.runningOrder) {
-				sid := m.runningOrder[m.runningCursor]
-				if aa, ok := m.activeAgents[sid]; ok {
+				rid := m.runningOrder[m.runningCursor]
+				if aa, ok := m.activeAgents[rid]; ok {
 					aa.cancel()
 				}
 			}
@@ -398,6 +437,32 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case msg.String() == "q":
 			m.cancelAllAgents()
 			return m, tea.Quit
+		}
+
+	case viewArchivedList:
+		switch {
+		case msg.String() == "q" || msg.String() == "ctrl+c":
+			m.cancelAllAgents()
+			return m, tea.Quit
+		case msg.String() == "esc":
+			m.state = viewInbox
+			return m, nil
+		case msg.String() == "u":
+			if item := m.archivedList.selectedItem(); item != nil {
+				return m, m.unarchiveItem(item)
+			}
+		case msg.String() == "enter":
+			if item := m.archivedList.selectedItem(); item != nil {
+				m.currentItem = item
+				m.previousView = viewArchivedList
+				m.detail.setItem(item)
+				m.state = viewDetail
+				return m, m.loadDetail(item)
+			}
+		default:
+			var cmd tea.Cmd
+			m.archivedList, cmd = m.archivedList.Update(msg)
+			return m, cmd
 		}
 
 	case viewCompleted:
@@ -420,10 +485,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = viewInbox
 			return m, nil
 		case msg.String() == "enter":
-			if s := m.completedList.selectedSession(); s != nil {
-				m.completedDetail.setSession(s)
+			if r := m.completedList.selectedRun(); r != nil {
+				m.completedDetail.setRun(r)
 				m.state = viewCompletedDetail
-				return m, m.loadSessionOutput(s.ID)
+				return m, m.loadRunOutput(r.ID)
 			}
 		default:
 			var cmd tea.Cmd
@@ -457,7 +522,7 @@ func (m Model) View() string {
 	switch m.state {
 	case viewInbox:
 		if m.loading {
-			return m.spinner.View() + " Loading issues..."
+			return m.spinner.View() + " Loading..."
 		}
 		return m.renderInboxView()
 
@@ -487,22 +552,30 @@ func (m Model) View() string {
 
 	case viewRunningList:
 		return m.renderRunningList()
+
+	case viewArchivedList:
+		return m.archivedList.View()
 	}
 
 	return ""
 }
 
-// renderInboxView renders the inbox with a running-agent badge when applicable.
+// renderInboxView renders the inbox with badges for running agents and sync status.
 func (m Model) renderInboxView() string {
 	base := m.inbox.View()
+	var badges []string
 	if len(m.activeAgents) > 0 {
-		badge := runningBadge.Render(fmt.Sprintf(" %d running ", len(m.activeAgents)))
-		// Insert badge after the title line
+		badges = append(badges, runningBadge.Render(fmt.Sprintf(" %d running ", len(m.activeAgents))))
+	}
+	if m.syncing {
+		badges = append(badges, statusBarStyle.Render("syncing..."))
+	}
+	if len(badges) > 0 {
 		lines := strings.SplitN(base, "\n", 2)
 		if len(lines) == 2 {
-			return lines[0] + " " + badge + "\n" + lines[1]
+			return lines[0] + " " + strings.Join(badges, " ") + "\n" + lines[1]
 		}
-		return base + " " + badge
+		return base + " " + strings.Join(badges, " ")
 	}
 	return base
 }
@@ -516,8 +589,8 @@ func (m Model) renderRunningList() string {
 	if len(m.runningOrder) == 0 {
 		b.WriteString("  No agents running.\n")
 	} else {
-		for i, sid := range m.runningOrder {
-			aa, ok := m.activeAgents[sid]
+		for i, rid := range m.runningOrder {
+			aa, ok := m.activeAgents[rid]
 			if !ok {
 				continue
 			}
@@ -528,7 +601,7 @@ func (m Model) renderRunningList() string {
 				style = selectedStyle
 			}
 			elapsed := time.Since(aa.startedAt).Truncate(time.Second)
-			label := fmt.Sprintf("%s/%s #%d — %s", aa.item.Owner, aa.item.Repo, aa.item.Number, elapsed)
+			label := fmt.Sprintf("%s/%s #%d — %s", aa.item.Owner, aa.item.Repo, safeNumber(aa.item), elapsed)
 			b.WriteString(cursor + style.Render(label) + "\n")
 		}
 	}
@@ -539,9 +612,8 @@ func (m Model) renderRunningList() string {
 
 // --- Workflow helpers ---
 
-func (m *Model) startWorkflowSelect(item *ghclient.WorkItem) (tea.Model, tea.Cmd) {
-	if item.Kind == ghclient.KindPR {
-		// PRs go straight to agent select with PR workflow
+func (m *Model) startWorkflowSelect(item *store.InboxItem) (tea.Model, tea.Cmd) {
+	if item.Kind == "pr" {
 		return m.startAgentSelect(workflow.WorkflowPR)
 	}
 	m.workflowOptions = []workflow.WorkflowType{workflow.WorkflowBug, workflow.WorkflowFeature}
@@ -552,10 +624,9 @@ func (m *Model) startWorkflowSelect(item *ghclient.WorkItem) (tea.Model, tea.Cmd
 
 func (m *Model) startAgentSelect(wfType workflow.WorkflowType) (tea.Model, tea.Cmd) {
 	m.agentOptions = nil
-	repoConfig := m.AgentForRepoItem(m.currentItem)
+	repoConfig := m.repoConfigForItem(m.currentItem)
 	defaultAgent := m.cfg.AgentForRepo(repoConfig)
 
-	// Put default first
 	if defaultAgent != "" {
 		m.agentOptions = append(m.agentOptions, defaultAgent)
 	}
@@ -566,11 +637,9 @@ func (m *Model) startAgentSelect(wfType workflow.WorkflowType) (tea.Model, tea.C
 	}
 	m.agentCursor = 0
 
-	// Store workflow type for later
 	m.workflowOptions = []workflow.WorkflowType{wfType}
 
 	if len(m.agentOptions) == 1 {
-		// Only one agent, skip selection
 		return m.startAgent(m.agentOptions[0])
 	}
 
@@ -582,37 +651,53 @@ func (m *Model) startAgent(agentName string) (tea.Model, tea.Cmd) {
 	item := m.currentItem
 	wfType := m.workflowOptions[0]
 
-	sessionID := uuid.New().String()
-	tracker := agent.NewSessionTracker()
+	// Create the run in the DB first to get the integer ID.
+	now := time.Now().UTC()
+	run := &store.Run{
+		InboxItemID:  item.ID,
+		WorkflowType: string(wfType),
+		AgentName:    agentName,
+		Status:       store.StatusRunning,
+		StartedAt:    now,
+	}
+	ctx := context.Background()
+	if err := m.db.CreateRun(ctx, run); err != nil {
+		m.errMsg = fmt.Sprintf("creating run: %v", err)
+		return *m, nil
+	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// Update item status.
+	m.db.UpdateItemStatus(ctx, item.ID, store.ItemStatusInProgress)
+
+	tracker := agent.NewSessionTracker()
+	cancelCtx, cancel := context.WithCancel(ctx)
 
 	view := newAgentViewModel()
-	view.setTitle(fmt.Sprintf("%s — %s/%s #%d", workflow.WorkflowDisplayName(wfType), item.Owner, item.Repo, item.Number))
+	view.setTitle(fmt.Sprintf("%s — %s/%s #%d", workflow.WorkflowDisplayName(wfType), item.Owner, item.Repo, safeNumber(item)))
 	view.setSize(m.width, m.height)
 
 	aa := &activeAgent{
-		sessionID: sessionID,
+		runID:     run.ID,
+		run:       run,
 		item:      item,
 		tracker:   tracker,
 		cancel:    cancel,
 		view:      view,
-		startedAt: time.Now(),
+		startedAt: now,
 	}
-	m.activeAgents[sessionID] = aa
-	m.runningOrder = append(m.runningOrder, sessionID)
+	m.activeAgents[run.ID] = aa
+	m.runningOrder = append(m.runningOrder, run.ID)
 
-	// Return to inbox — agent runs in background
 	m.state = viewInbox
 
 	return *m, tea.Batch(
 		m.spinner.Tick,
-		m.runAgent(ctx, sessionID, agentName, wfType, item, tracker),
-		m.listenForUpdates(sessionID, tracker),
+		m.runAgent(cancelCtx, run, item, tracker),
+		m.listenForUpdates(run.ID, tracker),
 	)
 }
 
-func (m Model) AgentForRepoItem(item *ghclient.WorkItem) config.RepoConfig {
+func (m Model) repoConfigForItem(item *store.InboxItem) config.RepoConfig {
 	for _, r := range m.cfg.Repos {
 		if r.Owner == item.Owner && r.Name == item.Repo {
 			return r
@@ -623,9 +708,9 @@ func (m Model) AgentForRepoItem(item *ghclient.WorkItem) config.RepoConfig {
 
 // --- Duplicate guard ---
 
-func (m Model) isItemBeingAnalyzed(item *ghclient.WorkItem) bool {
+func (m Model) isItemBeingAnalyzed(item *store.InboxItem) bool {
 	for _, aa := range m.activeAgents {
-		if aa.item.Owner == item.Owner && aa.item.Repo == item.Repo && aa.item.Number == item.Number {
+		if aa.item.ID == item.ID {
 			return true
 		}
 	}
@@ -637,18 +722,18 @@ func (m Model) isItemBeingAnalyzed(item *ghclient.WorkItem) bool {
 func (m *Model) cancelAllAgents() {
 	for _, aa := range m.activeAgents {
 		aa.cancel()
-		if aa.session != nil {
-			aa.session.Status = store.StatusCancelled
+		if aa.run != nil {
+			aa.run.Status = store.StatusCancelled
 			now := time.Now().UTC()
-			aa.session.CompletedAt = &now
-			m.store.Save(aa.session)
+			aa.run.CompletedAt = &now
+			m.db.UpdateRun(context.Background(), aa.run)
 		}
 	}
 }
 
-func (m *Model) removeFromRunningOrder(sessionID string) {
-	for i, sid := range m.runningOrder {
-		if sid == sessionID {
+func (m *Model) removeFromRunningOrder(runID int64) {
+	for i, rid := range m.runningOrder {
+		if rid == runID {
 			m.runningOrder = append(m.runningOrder[:i], m.runningOrder[i+1:]...)
 			if m.runningCursor >= len(m.runningOrder) && m.runningCursor > 0 {
 				m.runningCursor--
@@ -660,147 +745,114 @@ func (m *Model) removeFromRunningOrder(sessionID string) {
 
 // --- Tea commands ---
 
-func (m Model) loadWorkItems() tea.Cmd {
+func (m Model) loadItemsFromDB() tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
-		var allItems []ghclient.WorkItem
-		for _, repo := range m.cfg.Repos {
-			items, err := m.ghClient.FetchWorkItems(ctx, repo.Owner, repo.Name, repo.Labels)
-			if err != nil {
-				return WorkItemsLoaded{Err: err}
-			}
-			allItems = append(allItems, items...)
-		}
-		return WorkItemsLoaded{Items: allItems}
+		items, err := m.db.ListItems(ctx, []store.ItemStatus{
+			store.ItemStatusNew,
+			store.ItemStatusInProgress,
+			store.ItemStatusDone,
+		})
+		return WorkItemsLoaded{Items: items, Err: err}
 	}
 }
 
-func (m Model) loadComments(item *ghclient.WorkItem) tea.Cmd {
+func (m Model) syncFromSources() tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
-		comments, err := m.ghClient.FetchComments(ctx, item.Owner, item.Repo, item.Number)
+		newCount, updatedCount, err := m.syncer.Sync(ctx)
+		return SyncComplete{NewCount: newCount, UpdatedCount: updatedCount, Err: err}
+	}
+}
+
+func (m Model) loadDetail(item *store.InboxItem) tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+		detail, err := m.source.FetchDetail(ctx, item)
 		if err != nil {
-			return CommentsLoaded{Err: err}
+			return DetailLoaded{Err: err}
 		}
-		var diff string
-		if item.Kind == ghclient.KindPR {
-			diff, err = m.ghClient.FetchPRDiff(ctx, item.Owner, item.Repo, item.Number)
-			if err != nil {
-				return CommentsLoaded{Err: fmt.Errorf("fetching PR diff: %w", err)}
-			}
-		}
-		return CommentsLoaded{Comments: comments, Diff: diff}
+		return DetailLoaded{Detail: detail}
 	}
 }
 
-func (m Model) loadCompletedSessions() tea.Cmd {
+func (m Model) loadCompletedRuns() tea.Cmd {
 	return func() tea.Msg {
-		sessions, err := m.store.List()
+		ctx := context.Background()
+		runs, err := m.db.ListRuns(ctx, []store.SessionStatus{store.StatusCompleted, store.StatusFailed})
 		if err != nil {
 			return ErrorMsg{Err: err}
 		}
-		return completedSessionsLoaded{sessions: sessions}
+		return completedRunsLoaded{runs: runs}
 	}
 }
 
-func (m Model) loadSessionOutput(sessionID string) tea.Cmd {
+func (m Model) loadRunOutput(runID int64) tea.Cmd {
 	return func() tea.Msg {
-		entries, err := m.store.LoadEntries(sessionID)
-		return SessionOutputLoaded{SessionID: sessionID, Entries: entries, Err: err}
+		entries, err := m.db.LoadEntries(runID)
+		return SessionOutputLoaded{RunID: runID, Entries: entries, Err: err}
 	}
 }
 
-type completedSessionsLoaded struct {
-	sessions []*store.PersistedSession
-}
-
-func (m Model) runAgent(ctx context.Context, sessionID string, agentName string, wfType workflow.WorkflowType, item *ghclient.WorkItem, tracker *agent.SessionTracker) tea.Cmd {
+func (m Model) archiveItem(item *store.InboxItem) tea.Cmd {
 	return func() tea.Msg {
-		agentDef := m.cfg.Agents[agentName]
-		repoConfig := m.AgentForRepoItem(item)
-
-		// Create worktree
-		var wtPath string
-		var err error
-		if item.Kind == ghclient.KindPR {
-			wtPath, err = m.wtMgr.CreateForPR(repoConfig.Path, item.Number)
-		} else {
-			wtPath, err = m.wtMgr.CreateForIssue(repoConfig.Path, item.Number)
+		ctx := context.Background()
+		if err := m.db.UpdateItemStatus(ctx, item.ID, store.ItemStatusArchived); err != nil {
+			return ErrorMsg{Err: err}
 		}
-		if err != nil {
-			return AgentDoneMsg{SessionID: sessionID, Err: fmt.Errorf("creating worktree: %w", err)}
-		}
-
-		// Build prompt
-		promptData := workflow.PromptData{
-			Title:  item.Title,
-			Author: item.Author,
-			Body:   item.Body,
-			Number: item.Number,
-			Repo:   item.Owner + "/" + item.Repo,
-			Diff:   item.Diff,
-		}
-		for _, c := range item.Comments {
-			promptData.Comments = append(promptData.Comments, workflow.CommentData{
-				Author: c.Author,
-				Body:   c.Body,
-			})
-		}
-
-		prompt, err := workflow.BuildPrompt(wfType, promptData)
-		if err != nil {
-			return AgentDoneMsg{SessionID: sessionID, Err: fmt.Errorf("building prompt: %w", err)}
-		}
-
-		// Create session record
-		now := time.Now().UTC()
-		sess := &store.PersistedSession{
-			ID:           sessionID,
-			WorkflowType: wfType,
-			Owner:        item.Owner,
-			Repo:         item.Repo,
-			IssueNumber:  item.Number,
-			IssueTitle:   item.Title,
-			AgentName:    agentName,
-			WorktreePath: wtPath,
-			Status:       store.StatusRunning,
-			StartedAt:    now,
-			OutputFile:   m.store.OutputPath(sessionID),
-		}
-		m.store.Save(sess)
-
-		// Run the agent
-		runner := agent.NewRunner(agentDef, m.cfg.Safety, m.logger)
-		result, err := runner.Run(ctx, wtPath, prompt, tracker)
-
-		completedAt := time.Now().UTC()
-		sess.CompletedAt = &completedAt
-
-		if err != nil {
-			sess.Status = store.StatusFailed
-			m.store.Save(sess)
-			return AgentDoneMsg{SessionID: sessionID, Session: sess, Err: err}
-		}
-
-		sess.Status = store.StatusCompleted
-		sess.AgentSessionID = result.SessionID
-		if agentDef.ResumeCmd != "" {
-			sess.ResumeCmd = agentDef.BuildResumeCmd(result.SessionID)
-		}
-		m.store.Save(sess)
-
-		tracker.Close()
-		return AgentDoneMsg{SessionID: sessionID, Session: sess}
+		// Reload inbox.
+		items, err := m.db.ListItems(ctx, []store.ItemStatus{
+			store.ItemStatusNew,
+			store.ItemStatusInProgress,
+			store.ItemStatusDone,
+		})
+		return WorkItemsLoaded{Items: items, Err: err}
 	}
 }
 
-func (m Model) listenForUpdates(sessionID string, tracker *agent.SessionTracker) tea.Cmd {
+type completedRunsLoaded struct {
+	runs []*store.Run
+}
+
+type archivedItemsLoaded struct {
+	items []*store.InboxItem
+	err   error
+}
+
+func (m Model) loadArchivedItems() tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+		items, err := m.db.ListItems(ctx, []store.ItemStatus{store.ItemStatusArchived})
+		return archivedItemsLoaded{items: items, err: err}
+	}
+}
+
+func (m Model) unarchiveItem(item *store.InboxItem) tea.Cmd {
+	return func() tea.Msg {
+		ctx := context.Background()
+		if err := m.db.UpdateItemStatus(ctx, item.ID, store.ItemStatusNew); err != nil {
+			return ErrorMsg{Err: err}
+		}
+		// Reload both archived list and inbox.
+		items, err := m.db.ListItems(ctx, []store.ItemStatus{store.ItemStatusArchived})
+		return archivedItemsLoaded{items: items, err: err}
+	}
+}
+
+func (m Model) runAgent(ctx context.Context, run *store.Run, item *store.InboxItem, tracker *agent.SessionTracker) tea.Cmd {
+	return func() tea.Msg {
+		err := m.runner.Execute(ctx, run, item, tracker)
+		return AgentDoneMsg{RunID: run.ID, Run: run, Err: err}
+	}
+}
+
+func (m Model) listenForUpdates(runID int64, tracker *agent.SessionTracker) tea.Cmd {
 	return func() tea.Msg {
 		update, ok := <-tracker.UpdateChan()
 		if !ok {
 			return nil
 		}
-		return AgentUpdateMsg{SessionID: sessionID, Update: update}
+		return AgentUpdateMsg{RunID: runID, Update: update}
 	}
 }
 
@@ -826,12 +878,12 @@ func (m Model) renderAgentSelect() string {
 type workflowSelectView struct {
 	options []workflow.WorkflowType
 	cursor  int
-	item    *ghclient.WorkItem
+	item    *store.InboxItem
 }
 
 func (v *workflowSelectView) String() string {
 	var b string
-	b += titleStyle.Render(fmt.Sprintf("Analyze #%d: %s", v.item.Number, v.item.Title))
+	b += titleStyle.Render(fmt.Sprintf("Analyze #%d: %s", safeNumber(v.item), v.item.Title))
 	b += "\n\n"
 	b += "  Select workflow type:\n\n"
 	for i, opt := range v.options {
@@ -908,4 +960,12 @@ func makeOutputEntry(u acp.SessionUpdate) *store.OutputEntry {
 		return &store.OutputEntry{Type: "plan", Entries: entries}
 	}
 	return nil
+}
+
+// safeNumber returns the issue/PR number or 0 if nil.
+func safeNumber(item *store.InboxItem) int {
+	if item.Number != nil {
+		return *item.Number
+	}
+	return 0
 }

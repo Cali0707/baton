@@ -7,12 +7,15 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
-	"github.com/Cali0707/baton/internal/github"
+	"github.com/Cali0707/baton/internal/source"
+	"github.com/Cali0707/baton/internal/store"
 )
 
 type detailModel struct {
 	viewport viewport.Model
-	item     *github.WorkItem
+	item     *store.InboxItem
+	comments []source.Comment
+	diff     string
 	ready    bool
 	width    int
 	height   int
@@ -22,16 +25,21 @@ func newDetailModel() detailModel {
 	return detailModel{}
 }
 
-func (m *detailModel) setItem(item *github.WorkItem) {
+func (m *detailModel) setItem(item *store.InboxItem) {
 	m.item = item
+	m.comments = nil
+	m.diff = ""
 	m.updateContent()
 }
 
-func (m *detailModel) setComments(comments []github.Comment) {
-	if m.item != nil {
-		m.item.Comments = comments
-		m.updateContent()
-	}
+func (m *detailModel) setComments(comments []source.Comment) {
+	m.comments = comments
+	m.updateContent()
+}
+
+func (m *detailModel) setDiff(diff string) {
+	m.diff = diff
+	m.updateContent()
 }
 
 func (m *detailModel) updateContent() {
@@ -43,22 +51,28 @@ func (m *detailModel) updateContent() {
 	item := m.item
 
 	kind := "Issue"
-	if item.Kind == github.KindPR {
+	if item.Kind == "pr" {
 		kind = "Pull Request"
 	}
 
-	b.WriteString(fmt.Sprintf("# %s #%d: %s\n\n", kind, item.Number, item.Title))
+	number := ""
+	if item.Number != nil {
+		number = fmt.Sprintf("#%d", *item.Number)
+	}
+
+	b.WriteString(fmt.Sprintf("# %s %s: %s\n\n", kind, number, item.Title))
 	b.WriteString(fmt.Sprintf("**Author:** %s  \n", item.Author))
-	if len(item.Labels) > 0 {
-		b.WriteString(fmt.Sprintf("**Labels:** %s  \n", strings.Join(item.Labels, ", ")))
+	labels := ParseLabels(item.Labels)
+	if len(labels) > 0 {
+		b.WriteString(fmt.Sprintf("**Labels:** %s  \n", strings.Join(labels, ", ")))
 	}
 	b.WriteString("\n---\n\n")
 	b.WriteString(item.Body)
 	b.WriteString("\n")
 
-	if len(item.Comments) > 0 {
+	if len(m.comments) > 0 {
 		b.WriteString("\n---\n\n## Comments\n\n")
-		for _, c := range item.Comments {
+		for _, c := range m.comments {
 			b.WriteString(fmt.Sprintf("**%s:**\n%s\n\n", c.Author, c.Body))
 		}
 	}
@@ -99,13 +113,17 @@ func (m detailModel) View() string {
 
 	var b strings.Builder
 	kind := "Issue"
-	if m.item.Kind == github.KindPR {
+	if m.item.Kind == "pr" {
 		kind = "PR"
 	}
-	b.WriteString(titleStyle.Render(fmt.Sprintf("%s #%d", kind, m.item.Number)))
+	number := ""
+	if m.item.Number != nil {
+		number = fmt.Sprintf(" #%d", *m.item.Number)
+	}
+	b.WriteString(titleStyle.Render(fmt.Sprintf("%s%s", kind, number)))
 	b.WriteString("\n")
 	b.WriteString(m.viewport.View())
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("a analyze • esc back • ↑/↓ scroll"))
+	b.WriteString(helpStyle.Render("w workflow • a archive • esc back • up/down scroll"))
 	return b.String()
 }

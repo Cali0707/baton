@@ -9,7 +9,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/Cali0707/baton/internal/config"
 	ghclient "github.com/Cali0707/baton/internal/github"
+	"github.com/Cali0707/baton/internal/runner"
+	"github.com/Cali0707/baton/internal/source"
 	"github.com/Cali0707/baton/internal/store"
+	bsync "github.com/Cali0707/baton/internal/sync"
 	"github.com/Cali0707/baton/internal/tui"
 )
 
@@ -56,14 +59,20 @@ func run() error {
 		return fmt.Errorf("creating GitHub client: %w", err)
 	}
 
-	// Session store
-	sessionStore, err := store.New(cfg.SessionsDir())
+	// Database
+	db, err := store.OpenDB(cfg.General.DataDir)
 	if err != nil {
-		return fmt.Errorf("creating session store: %w", err)
+		return fmt.Errorf("opening database: %w", err)
 	}
+	defer db.Close()
+
+	// Source, Syncer, Runner
+	src := source.NewGitHub(gh)
+	syncer := bsync.New(db, gh, cfg.Repos)
+	run := runner.New(db, src, cfg, logger)
 
 	// Launch TUI
-	model := tui.NewModel(cfg, gh, sessionStore, logger)
+	model := tui.NewModel(cfg, db, syncer, src, run, logger)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("running TUI: %w", err)
