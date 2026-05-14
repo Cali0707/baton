@@ -51,7 +51,7 @@ func newInboxModel() inboxModel {
 	return inboxModel{table: t}
 }
 
-func (m *inboxModel) setItems(items []*store.InboxItem) {
+func (m *inboxModel) setItems(items []*store.InboxItem, repoLabel func(owner, repo string) string) {
 	m.items = items
 	rows := make([]table.Row, len(items))
 	for i, item := range items {
@@ -71,7 +71,7 @@ func (m *inboxModel) setItems(items []*store.InboxItem) {
 		rows[i] = table.Row{
 			status,
 			kind,
-			item.Owner + "/" + item.Repo,
+			repoLabel(item.Owner, item.Repo),
 			number,
 			truncate(item.Title, 34),
 			item.Author,

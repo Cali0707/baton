@@ -11,11 +11,13 @@ name = "myproject"
 path = "/Users/me/repos/myproject"
 default_agent = "claude"
 labels = ["bug", "enhancement"]
+# display_name = "myorg/myproj"   # short label for table views (defaults to owner/name)
 
 # [[repos]]
 # owner = "myorg"
 # name = "other-project"
 # path = "/Users/me/repos/other-project"
+# display_name = "myorg/other"
 
 [agents.claude]
 cmd = "claude"

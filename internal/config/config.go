@@ -41,10 +41,18 @@ type RepoConfig struct {
 	Path         string   `toml:"path"`
 	DefaultAgent string   `toml:"default_agent"`
 	Labels       []string `toml:"labels"`
+	DisplayName  string   `toml:"display_name"`
 }
 
 func (r RepoConfig) FullName() string {
 	return r.Owner + "/" + r.Name
+}
+
+func (r RepoConfig) DisplayLabel() string {
+	if r.DisplayName != "" {
+		return r.DisplayName
+	}
+	return r.FullName()
 }
 
 type AgentDef struct {
