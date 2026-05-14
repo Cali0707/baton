@@ -12,21 +12,26 @@ import (
 	"github.com/Cali0707/baton/internal/workflow"
 )
 
+// Fixed column widths for the completed runs table. Workflow is flexible.
+const (
+	compColAgentWidth  = 10
+	compColStatusWidth = 12
+	compColDateWidth   = 20
+	compFixedWidth     = compColAgentWidth + compColStatusWidth + compColDateWidth
+	compMinWfWidth     = 16
+)
+
 // completedListModel shows the history of completed agent runs.
 type completedListModel struct {
-	table  table.Model
-	runs   []*store.Run
-	width  int
-	height int
+	table   table.Model
+	runs    []*store.Run
+	wfWidth int
+	width   int
+	height  int
 }
 
 func newCompletedListModel() completedListModel {
-	columns := []table.Column{
-		{Title: "Workflow", Width: 16},
-		{Title: "Agent", Width: 10},
-		{Title: "Status", Width: 12},
-		{Title: "Date", Width: 20},
-	}
+	columns := completedColumns(compMinWfWidth)
 
 	t := table.New(
 		table.WithColumns(columns),
@@ -46,7 +51,16 @@ func newCompletedListModel() completedListModel {
 		Bold(true)
 	t.SetStyles(s)
 
-	return completedListModel{table: t}
+	return completedListModel{table: t, wfWidth: compMinWfWidth}
+}
+
+func completedColumns(wfWidth int) []table.Column {
+	return []table.Column{
+		{Title: "Workflow", Width: wfWidth},
+		{Title: "Agent", Width: compColAgentWidth},
+		{Title: "Status", Width: compColStatusWidth},
+		{Title: "Date", Width: compColDateWidth},
+	}
 }
 
 func (m *completedListModel) setRuns(runs []*store.Run) {
@@ -76,6 +90,13 @@ func (m *completedListModel) setSize(w, h int) {
 	m.height = h
 	m.table.SetWidth(w)
 	m.table.SetHeight(h - 5)
+
+	wfWidth := w - compFixedWidth - 4
+	if wfWidth < compMinWfWidth {
+		wfWidth = compMinWfWidth
+	}
+	m.wfWidth = wfWidth
+	m.table.SetColumns(completedColumns(wfWidth))
 }
 
 func (m completedListModel) Update(msg tea.Msg) (completedListModel, tea.Cmd) {
