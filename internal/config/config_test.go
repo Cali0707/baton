@@ -65,6 +65,21 @@ func TestRepoConfigFullName(t *testing.T) {
 	}
 }
 
+func TestRepoConfigDisplayLabel(t *testing.T) {
+	t.Run("falls back to FullName when DisplayName is empty", func(t *testing.T) {
+		r := RepoConfig{Owner: "myorg", Name: "myrepo"}
+		if got := r.DisplayLabel(); got != "myorg/myrepo" {
+			t.Errorf("DisplayLabel() = %q, want %q", got, "myorg/myrepo")
+		}
+	})
+	t.Run("returns DisplayName when set", func(t *testing.T) {
+		r := RepoConfig{Owner: "kubernetes-sigs", Name: "mcp-lifecycle-operator", DisplayName: "k-sigs/mcp-lc-op"}
+		if got := r.DisplayLabel(); got != "k-sigs/mcp-lc-op" {
+			t.Errorf("DisplayLabel() = %q, want %q", got, "k-sigs/mcp-lc-op")
+		}
+	})
+}
+
 func TestValidate_NoRepos(t *testing.T) {
 	cfg := Config{
 		Agents: map[string]AgentDef{"claude": {Cmd: "claude"}},
@@ -227,6 +242,7 @@ owner = "myorg"
 name = "myrepo"
 path = "/home/user/repos/myrepo"
 labels = ["bug", "enhancement"]
+display_name = "myorg/short"
 
 [agents.claude]
 cmd = "claude"
@@ -268,6 +284,9 @@ max_file_write_bytes = 2097152
 	}
 	if len(cfg.Repos[0].Labels) != 2 {
 		t.Errorf("Repos[0].Labels = %v, want [bug enhancement]", cfg.Repos[0].Labels)
+	}
+	if cfg.Repos[0].DisplayName != "myorg/short" {
+		t.Errorf("Repos[0].DisplayName = %q, want %q", cfg.Repos[0].DisplayName, "myorg/short")
 	}
 	if cfg.Defaults.Agent != "claude" {
 		t.Errorf("Defaults.Agent = %q", cfg.Defaults.Agent)

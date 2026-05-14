@@ -152,7 +152,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err != nil {
 			m.errMsg = msg.Err.Error()
 		} else {
-			m.inbox.setItems(msg.Items)
+			m.inbox.setItems(msg.Items, m.repoDisplayLabel)
 			m.errMsg = ""
 		}
 
@@ -221,7 +221,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.errMsg = msg.err.Error()
 		} else {
-			m.archivedList.setItems(msg.items)
+			m.archivedList.setItems(msg.items, m.repoDisplayLabel)
 		}
 
 	case ErrorMsg:
@@ -601,7 +601,7 @@ func (m Model) renderRunningList() string {
 				style = selectedStyle
 			}
 			elapsed := time.Since(aa.startedAt).Truncate(time.Second)
-			label := fmt.Sprintf("%s/%s #%d — %s", aa.item.Owner, aa.item.Repo, safeNumber(aa.item), elapsed)
+			label := fmt.Sprintf("%s #%d — %s", m.repoDisplayLabel(aa.item.Owner, aa.item.Repo), safeNumber(aa.item), elapsed)
 			b.WriteString(cursor + style.Render(label) + "\n")
 		}
 	}
@@ -673,7 +673,7 @@ func (m *Model) startAgent(agentName string) (tea.Model, tea.Cmd) {
 	cancelCtx, cancel := context.WithCancel(ctx)
 
 	view := newAgentViewModel()
-	view.setTitle(fmt.Sprintf("%s — %s/%s #%d", workflow.WorkflowDisplayName(wfType), item.Owner, item.Repo, safeNumber(item)))
+	view.setTitle(fmt.Sprintf("%s — %s #%d", workflow.WorkflowDisplayName(wfType), m.repoDisplayLabel(item.Owner, item.Repo), safeNumber(item)))
 	view.setSize(m.width, m.height)
 
 	aa := &activeAgent{
@@ -704,6 +704,15 @@ func (m Model) repoConfigForItem(item *store.InboxItem) config.RepoConfig {
 		}
 	}
 	return config.RepoConfig{Owner: item.Owner, Name: item.Repo}
+}
+
+func (m Model) repoDisplayLabel(owner, repo string) string {
+	for _, r := range m.cfg.Repos {
+		if r.Owner == owner && r.Name == repo {
+			return r.DisplayLabel()
+		}
+	}
+	return owner + "/" + repo
 }
 
 // --- Duplicate guard ---
