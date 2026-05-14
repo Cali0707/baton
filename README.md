@@ -37,6 +37,7 @@ mkdir my-repo && cd my-repo
 git clone --bare <remote-url> .git
 git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
 git fetch origin
+git remote set-head origin --auto
 DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
 git worktree add "$DEFAULT_BRANCH" "$DEFAULT_BRANCH"
 ```
