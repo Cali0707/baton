@@ -10,22 +10,27 @@ import (
 	"github.com/Cali0707/baton/internal/store"
 )
 
+// Fixed column widths for the archived table. Title is flexible and computed in setSize.
+const (
+	archColTypeWidth    = 6
+	archColRepoWidth    = 20
+	archColNumWidth     = 6
+	archColAuthorWidth  = 15
+	archColUpdatedWidth = 12
+	archFixedWidth      = archColTypeWidth + archColRepoWidth + archColNumWidth + archColAuthorWidth + archColUpdatedWidth
+	archMinTitleWidth   = 20
+)
+
 type archivedListModel struct {
-	table  table.Model
-	items  []*store.InboxItem
-	width  int
-	height int
+	table      table.Model
+	items      []*store.InboxItem
+	titleWidth int
+	width      int
+	height     int
 }
 
 func newArchivedListModel() archivedListModel {
-	columns := []table.Column{
-		{Title: "Type", Width: 6},
-		{Title: "Repo", Width: 20},
-		{Title: "#", Width: 6},
-		{Title: "Title", Width: 40},
-		{Title: "Author", Width: 15},
-		{Title: "Updated", Width: 12},
-	}
+	columns := archivedColumns(archMinTitleWidth)
 
 	t := table.New(
 		table.WithColumns(columns),
@@ -45,7 +50,18 @@ func newArchivedListModel() archivedListModel {
 		Bold(true)
 	t.SetStyles(s)
 
-	return archivedListModel{table: t}
+	return archivedListModel{table: t, titleWidth: archMinTitleWidth}
+}
+
+func archivedColumns(titleWidth int) []table.Column {
+	return []table.Column{
+		{Title: "Type", Width: archColTypeWidth},
+		{Title: "Repo", Width: archColRepoWidth},
+		{Title: "#", Width: archColNumWidth},
+		{Title: "Title", Width: titleWidth},
+		{Title: "Author", Width: archColAuthorWidth},
+		{Title: "Updated", Width: archColUpdatedWidth},
+	}
 }
 
 func (m *archivedListModel) setItems(items []*store.InboxItem) {
@@ -68,7 +84,7 @@ func (m *archivedListModel) setItems(items []*store.InboxItem) {
 			kind,
 			item.Owner + "/" + item.Repo,
 			number,
-			truncate(item.Title, 38),
+			truncate(item.Title, m.titleWidth-2),
 			item.Author,
 			relativeTime(updatedAt),
 		}
@@ -89,6 +105,13 @@ func (m *archivedListModel) setSize(w, h int) {
 	m.height = h
 	m.table.SetWidth(w)
 	m.table.SetHeight(h - 5)
+
+	titleWidth := w - archFixedWidth - 6
+	if titleWidth < archMinTitleWidth {
+		titleWidth = archMinTitleWidth
+	}
+	m.titleWidth = titleWidth
+	m.table.SetColumns(archivedColumns(titleWidth))
 }
 
 func (m archivedListModel) Update(msg tea.Msg) (archivedListModel, tea.Cmd) {

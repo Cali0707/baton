@@ -12,23 +12,28 @@ import (
 	"github.com/Cali0707/baton/internal/store"
 )
 
+// Fixed column widths for the inbox table. Title is flexible and computed in setSize.
+const (
+	inboxColStWidth      = 5
+	inboxColTypeWidth    = 6
+	inboxColRepoWidth    = 20
+	inboxColNumWidth     = 6
+	inboxColAuthorWidth  = 15
+	inboxColUpdatedWidth = 12
+	inboxFixedWidth      = inboxColStWidth + inboxColTypeWidth + inboxColRepoWidth + inboxColNumWidth + inboxColAuthorWidth + inboxColUpdatedWidth
+	inboxMinTitleWidth   = 20
+)
+
 type inboxModel struct {
-	table  table.Model
-	items  []*store.InboxItem
-	width  int
-	height int
+	table      table.Model
+	items      []*store.InboxItem
+	titleWidth int
+	width      int
+	height     int
 }
 
 func newInboxModel() inboxModel {
-	columns := []table.Column{
-		{Title: "St", Width: 5},
-		{Title: "Type", Width: 6},
-		{Title: "Repo", Width: 20},
-		{Title: "#", Width: 6},
-		{Title: "Title", Width: 36},
-		{Title: "Author", Width: 15},
-		{Title: "Updated", Width: 12},
-	}
+	columns := inboxColumns(inboxMinTitleWidth)
 
 	t := table.New(
 		table.WithColumns(columns),
@@ -48,7 +53,19 @@ func newInboxModel() inboxModel {
 		Bold(true)
 	t.SetStyles(s)
 
-	return inboxModel{table: t}
+	return inboxModel{table: t, titleWidth: inboxMinTitleWidth}
+}
+
+func inboxColumns(titleWidth int) []table.Column {
+	return []table.Column{
+		{Title: "St", Width: inboxColStWidth},
+		{Title: "Type", Width: inboxColTypeWidth},
+		{Title: "Repo", Width: inboxColRepoWidth},
+		{Title: "#", Width: inboxColNumWidth},
+		{Title: "Title", Width: titleWidth},
+		{Title: "Author", Width: inboxColAuthorWidth},
+		{Title: "Updated", Width: inboxColUpdatedWidth},
+	}
 }
 
 func (m *inboxModel) setItems(items []*store.InboxItem) {
@@ -73,7 +90,7 @@ func (m *inboxModel) setItems(items []*store.InboxItem) {
 			kind,
 			item.Owner + "/" + item.Repo,
 			number,
-			truncate(item.Title, 34),
+			truncate(item.Title, m.titleWidth-2),
 			item.Author,
 			relativeTime(updatedAt),
 		}
@@ -125,6 +142,14 @@ func (m *inboxModel) setSize(w, h int) {
 	m.height = h
 	m.table.SetWidth(w)
 	m.table.SetHeight(h - 5)
+
+	// Give extra width to the Title column. Subtract padding (~7 for column gaps).
+	titleWidth := w - inboxFixedWidth - 7
+	if titleWidth < inboxMinTitleWidth {
+		titleWidth = inboxMinTitleWidth
+	}
+	m.titleWidth = titleWidth
+	m.table.SetColumns(inboxColumns(titleWidth))
 }
 
 // ParseLabels returns the labels from the JSON-encoded labels field.
