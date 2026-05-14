@@ -53,8 +53,17 @@ func (r *Runner) Run(ctx context.Context, worktreePath, prompt string, tracker *
 	if err != nil {
 		return nil, fmt.Errorf("creating stdout pipe: %w", err)
 	}
-	// Discard stderr from the agent process itself (not from terminals it creates)
-	cmd.Stderr = io.Discard
+	// Capture stderr from the agent for debugging.
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("creating stderr pipe: %w", err)
+	}
+	go func() {
+		stderrBytes, _ := io.ReadAll(stderrPipe)
+		if len(stderrBytes) > 0 {
+			r.logger.Error("agent stderr", "output", string(stderrBytes))
+		}
+	}()
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("starting agent %q: %w", r.agentDef.Cmd, err)
