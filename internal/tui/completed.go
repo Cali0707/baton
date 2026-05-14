@@ -12,29 +12,27 @@ import (
 	"github.com/Cali0707/baton/internal/workflow"
 )
 
-// Fixed column widths for the completed runs table. Workflow is flexible.
-const (
-	compColAgentWidth  = 10
-	compColStatusWidth = 12
-	compColDateWidth   = 20
-	compFixedWidth     = compColAgentWidth + compColStatusWidth + compColDateWidth
-	compMinWfWidth     = 16
-)
+var completedLayout = []columnSpec{
+	{Title: "Workflow", Flex: true, MinWidth: 16},
+	{Title: "Agent", Width: 10},
+	{Title: "Status", Width: 12},
+	{Title: "Date", Width: 20},
+}
 
 // completedListModel shows the history of completed agent runs.
 type completedListModel struct {
-	table   table.Model
-	runs    []*store.Run
-	wfWidth int
-	width   int
-	height  int
+	table  table.Model
+	layout tableLayout
+	runs   []*store.Run
+	width  int
+	height int
 }
 
 func newCompletedListModel() completedListModel {
-	columns := completedColumns(compMinWfWidth)
+	layout := newTableLayout(completedLayout)
 
 	t := table.New(
-		table.WithColumns(columns),
+		table.WithColumns(layout.columns()),
 		table.WithFocused(true),
 		table.WithHeight(20),
 	)
@@ -51,16 +49,7 @@ func newCompletedListModel() completedListModel {
 		Bold(true)
 	t.SetStyles(s)
 
-	return completedListModel{table: t, wfWidth: compMinWfWidth}
-}
-
-func completedColumns(wfWidth int) []table.Column {
-	return []table.Column{
-		{Title: "Workflow", Width: wfWidth},
-		{Title: "Agent", Width: compColAgentWidth},
-		{Title: "Status", Width: compColStatusWidth},
-		{Title: "Date", Width: compColDateWidth},
-	}
+	return completedListModel{table: t, layout: layout}
 }
 
 func (m *completedListModel) setRuns(runs []*store.Run) {
@@ -90,13 +79,7 @@ func (m *completedListModel) setSize(w, h int) {
 	m.height = h
 	m.table.SetWidth(w)
 	m.table.SetHeight(h - 5)
-
-	wfWidth := w - compFixedWidth - 4
-	if wfWidth < compMinWfWidth {
-		wfWidth = compMinWfWidth
-	}
-	m.wfWidth = wfWidth
-	m.table.SetColumns(completedColumns(wfWidth))
+	m.table.SetColumns(m.layout.recompute(w))
 }
 
 func (m completedListModel) Update(msg tea.Msg) (completedListModel, tea.Cmd) {
