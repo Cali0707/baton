@@ -113,6 +113,10 @@ func (c *Client) CreateTerminal(ctx context.Context, params acp.CreateTerminalRe
 		cwd = &c.sandbox
 	}
 
+	if err := c.fs.ValidatePath(c.sandbox, *cwd); err != nil {
+		return acp.CreateTerminalResponse{}, fmt.Errorf("terminal cwd rejected: %w", err)
+	}
+
 	id, err := c.term.Create(params.Command, params.Args, cwd)
 	if err != nil {
 		return acp.CreateTerminalResponse{}, err

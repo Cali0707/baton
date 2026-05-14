@@ -239,6 +239,21 @@ func TestClient_CreateTerminal_WithCwd(t *testing.T) {
 	client.WaitForTerminalExit(ctx, acp.WaitForTerminalExitRequest{TerminalId: resp.TerminalId})
 }
 
+func TestClient_CreateTerminal_CwdOutsideSandbox(t *testing.T) {
+	client, _ := testClient(t)
+	ctx := context.Background()
+
+	outsideDir := "/tmp"
+	_, err := client.CreateTerminal(ctx, acp.CreateTerminalRequest{
+		Command: "echo",
+		Args:    []string{"escaped"},
+		Cwd:     &outsideDir,
+	})
+	if err == nil {
+		t.Error("should reject cwd outside sandbox")
+	}
+}
+
 func TestClient_TerminalLifecycle(t *testing.T) {
 	client, _ := testClient(t)
 	ctx := context.Background()
