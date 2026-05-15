@@ -79,7 +79,14 @@ func (r *Runner) Execute(ctx context.Context, run *store.Run, item *store.InboxI
 	}
 
 	// Fetch detail (comments, diff) from source.
-	detail, _ := r.source.FetchDetail(ctx, item)
+	detail, err := r.source.FetchDetail(ctx, item)
+	if err != nil {
+		completedAt := time.Now().UTC()
+		run.CompletedAt = &completedAt
+		run.Status = store.StatusFailed
+		r.store.UpdateRun(ctx, run)
+		return fmt.Errorf("failed fetching detail for %s/%s#%d: %w", item.Owner, item.Repo, number, err)
+	}
 	if detail != nil {
 		for _, c := range detail.Comments {
 			promptData.Comments = append(promptData.Comments, workflow.CommentData{
