@@ -61,8 +61,8 @@ func (m *detailModel) updateContent() {
 	}
 
 	header := fmt.Sprintf("# %s %s: %s\n\n", kind, number, item.Title)
-	if item.SourceState == "closed" || item.SourceState == "merged" {
-		header = fmt.Sprintf("# %s %s (%s): %s\n\n", kind, number, item.SourceState, item.Title)
+	if stateLabel := sourceStateLabel(item.SourceState); stateLabel != "" {
+		header = fmt.Sprintf("# %s %s (%s): %s\n\n", kind, number, stateLabel, item.Title)
 	}
 	b.WriteString(header)
 	b.WriteString(fmt.Sprintf("**Author:** %s  \n", item.Author))
