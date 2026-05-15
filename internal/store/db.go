@@ -65,14 +65,15 @@ func (d *DB) Close() error {
 // --- Inbox items ---
 
 func (d *DB) UpsertItem(ctx context.Context, item *InboxItem) error {
-	const q = `INSERT INTO inbox_items (source_type, source_id, kind, number, title, body, author, labels, owner, repo, metadata, status, worktree_path, source_updated_at, created_at, updated_at)
-VALUES (:source_type, :source_id, :kind, :number, :title, :body, :author, :labels, :owner, :repo, :metadata, :status, :worktree_path, :source_updated_at, :created_at, :updated_at)
+	const q = `INSERT INTO inbox_items (source_type, source_id, kind, number, title, body, author, labels, owner, repo, metadata, source_state, status, worktree_path, source_updated_at, created_at, updated_at)
+VALUES (:source_type, :source_id, :kind, :number, :title, :body, :author, :labels, :owner, :repo, :metadata, :source_state, :status, :worktree_path, :source_updated_at, :created_at, :updated_at)
 ON CONFLICT(source_id) DO UPDATE SET
     title = excluded.title,
     body = excluded.body,
     author = excluded.author,
     labels = excluded.labels,
     metadata = excluded.metadata,
+    source_state = excluded.source_state,
     source_updated_at = excluded.source_updated_at,
     updated_at = CURRENT_TIMESTAMP
 RETURNING id`
@@ -134,6 +135,24 @@ func (d *DB) UpdateItemStatus(ctx context.Context, id int64, status ItemStatus) 
 		return fmt.Errorf("updating item %d status: %w", id, err)
 	}
 	return nil
+}
+
+func (d *DB) UpdateItemSourceState(ctx context.Context, id int64, sourceState string) error {
+	_, err := d.db.ExecContext(ctx, `UPDATE inbox_items SET source_state = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, sourceState, id)
+	if err != nil {
+		return fmt.Errorf("updating item %d source_state: %w", id, err)
+	}
+	return nil
+}
+
+func (d *DB) ListItemsByRepoAndSourceState(ctx context.Context, owner, repo, sourceState string) ([]*InboxItem, error) {
+	var items []*InboxItem
+	if err := d.db.SelectContext(ctx, &items,
+		`SELECT * FROM inbox_items WHERE owner = ? AND repo = ? AND source_state = ? ORDER BY source_updated_at DESC NULLS LAST`,
+		owner, repo, sourceState); err != nil {
+		return nil, fmt.Errorf("listing items for %s/%s with source_state %q: %w", owner, repo, sourceState, err)
+	}
+	return items, nil
 }
 
 func (d *DB) DeleteItem(ctx context.Context, id int64) error {

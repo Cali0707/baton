@@ -25,6 +25,7 @@ type InboxItem struct {
 	Owner           string     `db:"owner"`
 	Repo            string     `db:"repo"`
 	Metadata        string     `db:"metadata"`
+	SourceState     string     `db:"source_state"`
 	Status          ItemStatus `db:"status"`
 	WorktreePath    string     `db:"worktree_path"`
 	SourceUpdatedAt *time.Time `db:"source_updated_at"`

@@ -10,6 +10,8 @@ type Store interface {
 	GetItemBySourceID(ctx context.Context, sourceID string) (*InboxItem, error)
 	ListItems(ctx context.Context, statuses []ItemStatus) ([]*InboxItem, error)
 	UpdateItemStatus(ctx context.Context, id int64, status ItemStatus) error
+	UpdateItemSourceState(ctx context.Context, id int64, sourceState string) error
+	ListItemsByRepoAndSourceState(ctx context.Context, owner, repo, sourceState string) ([]*InboxItem, error)
 	DeleteItem(ctx context.Context, id int64) error
 
 	// Runs

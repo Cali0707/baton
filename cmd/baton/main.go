@@ -68,7 +68,7 @@ func run() error {
 
 	// Source, Syncer, Runner
 	src := source.NewGitHub(gh)
-	syncer := bsync.New(db, gh, cfg.Repos)
+	syncer := bsync.New(db, gh, cfg.Repos, logger)
 	run := runner.New(db, src, cfg, logger)
 
 	// Launch TUI

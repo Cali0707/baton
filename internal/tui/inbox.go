@@ -15,6 +15,7 @@ import (
 var inboxLayout = []columnSpec{
 	{Title: "St", Width: 5},
 	{Title: "Type", Width: 6},
+	{Title: "State", Width: 6},
 	{Title: "Repo", Width: 20},
 	{Title: "#", Width: 6},
 	{Title: "Title", Flex: true, MinWidth: 20},
@@ -74,6 +75,7 @@ func (m *inboxModel) setItems(items []*store.InboxItem, repoLabel func(owner, re
 		rows[i] = table.Row{
 			status,
 			kind,
+			sourceStateLabel(item.SourceState),
 			repoLabel(item.Owner, item.Repo),
 			number,
 			truncate(item.Title, m.layout.FlexWidth()-2),
@@ -96,6 +98,17 @@ func statusLabel(s store.ItemStatus) string {
 		return "ARCH"
 	default:
 		return string(s)
+	}
+}
+
+func sourceStateLabel(s string) string {
+	switch s {
+	case "closed":
+		return "CLOSED"
+	case "merged":
+		return "MERGED"
+	default:
+		return ""
 	}
 }
 
