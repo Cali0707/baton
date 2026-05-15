@@ -666,8 +666,9 @@ func (m *Model) startAgent(agentName string) (tea.Model, tea.Cmd) {
 		return *m, nil
 	}
 
-	// Update item status.
+	// Update item status and record review timestamp.
 	m.db.UpdateItemStatus(ctx, item.ID, store.ItemStatusInProgress)
+	m.db.SetLastReviewedAt(ctx, item.ID, now)
 
 	tracker := agent.NewSessionTracker()
 	cancelCtx, cancel := context.WithCancel(ctx)

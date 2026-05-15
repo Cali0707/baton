@@ -1,6 +1,9 @@
 package store
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Store defines the persistence interface for inbox items, runs, and output.
 type Store interface {
@@ -12,6 +15,7 @@ type Store interface {
 	UpdateItemStatus(ctx context.Context, id int64, status ItemStatus) error
 	UpdateItemSourceState(ctx context.Context, id int64, sourceState string) error
 	ListItemsByRepoAndSourceState(ctx context.Context, owner, repo, sourceState string) ([]*InboxItem, error)
+	SetLastReviewedAt(ctx context.Context, id int64, t time.Time) error
 	DeleteItem(ctx context.Context, id int64) error
 
 	// Runs

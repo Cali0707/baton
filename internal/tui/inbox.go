@@ -63,7 +63,7 @@ func (m *inboxModel) setItems(items []*store.InboxItem, repoLabel func(owner, re
 		if item.Kind == "pr" {
 			kind = "PR"
 		}
-		status := statusLabel(item.Status)
+		status := statusLabel(item)
 		number := ""
 		if item.Number != nil {
 			number = fmt.Sprintf("%d", *item.Number)
@@ -86,18 +86,21 @@ func (m *inboxModel) setItems(items []*store.InboxItem, repoLabel func(owner, re
 	m.table.SetRows(rows)
 }
 
-func statusLabel(s store.ItemStatus) string {
-	switch s {
+func statusLabel(item *store.InboxItem) string {
+	switch item.Status {
 	case store.ItemStatusNew:
 		return "NEW"
 	case store.ItemStatusInProgress:
+		if item.IsStaleReview() {
+			return "RUN*"
+		}
 		return "RUN"
 	case store.ItemStatusDone:
 		return "DONE"
 	case store.ItemStatusArchived:
 		return "ARCH"
 	default:
-		return string(s)
+		return string(item.Status)
 	}
 }
 
