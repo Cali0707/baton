@@ -3,16 +3,17 @@ package tui
 import "github.com/charmbracelet/bubbles/key"
 
 type keyMap struct {
-	Up       key.Binding
-	Down     key.Binding
-	Enter    key.Binding
-	Back     key.Binding
-	Workflow key.Binding
-	Archive  key.Binding
-	Refresh  key.Binding
-	Tab      key.Binding
-	Quit     key.Binding
-	Help     key.Binding
+	Up             key.Binding
+	Down           key.Binding
+	Enter          key.Binding
+	Back           key.Binding
+	Workflow       key.Binding
+	Archive        key.Binding
+	Refresh        key.Binding
+	Tab            key.Binding
+	Quit           key.Binding
+	Help           key.Binding
+	ToggleMarkdown key.Binding
 }
 
 var keys = keyMap{
@@ -55,5 +56,9 @@ var keys = keyMap{
 	Help: key.NewBinding(
 		key.WithKeys("?"),
 		key.WithHelp("?", "help"),
+	),
+	ToggleMarkdown: key.NewBinding(
+		key.WithKeys("m"),
+		key.WithHelp("m", "toggle markdown"),
 	),
 }
