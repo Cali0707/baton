@@ -85,7 +85,7 @@ func (r *Runner) Execute(ctx context.Context, run *store.Run, item *store.InboxI
 		run.CompletedAt = &completedAt
 		run.Status = store.StatusFailed
 		r.store.UpdateRun(ctx, run)
-		return fmt.Errorf("fetching detail for %s/%s#%d: %w", item.Owner, item.Repo, number, err)
+		return fmt.Errorf("failed fetching detail for %s/%s#%d: %w", item.Owner, item.Repo, number, err)
 	}
 	if detail != nil {
 		for _, c := range detail.Comments {
