@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
-	ghclient "github.com/Cali0707/baton/internal/github"
 	"github.com/Cali0707/baton/internal/config"
+	ghclient "github.com/Cali0707/baton/internal/github"
 	"github.com/Cali0707/baton/internal/store"
 )
 
@@ -16,10 +17,14 @@ type Syncer struct {
 	db       store.Store
 	ghClient *ghclient.Client
 	repos    []config.RepoConfig
+	logger   *slog.Logger
 }
 
-func New(db store.Store, ghClient *ghclient.Client, repos []config.RepoConfig) SyncService {
-	return &Syncer{db: db, ghClient: ghClient, repos: repos}
+func New(db store.Store, ghClient *ghclient.Client, repos []config.RepoConfig, logger *slog.Logger) SyncService {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Syncer{db: db, ghClient: ghClient, repos: repos, logger: logger}
 }
 
 // Sync fetches from all configured sources and upserts into the DB.
@@ -69,6 +74,7 @@ func (s *Syncer) refreshStaleItems(ctx context.Context, owner, repo string, fetc
 		return err
 	}
 
+	var checked, updated int
 	for _, item := range openItems {
 		if fetchedSourceIDs[item.SourceID] {
 			continue
@@ -77,6 +83,7 @@ func (s *Syncer) refreshStaleItems(ctx context.Context, owner, repo string, fetc
 			continue
 		}
 
+		checked++
 		var (
 			state    string
 			fetchErr error
@@ -90,6 +97,10 @@ func (s *Syncer) refreshStaleItems(ctx context.Context, owner, repo string, fetc
 			continue
 		}
 		if fetchErr != nil {
+			s.logger.Warn("failed to fetch state for stale item",
+				"owner", owner, "repo", repo,
+				"kind", item.Kind, "number", *item.Number,
+				"error", fetchErr)
 			continue
 		}
 
@@ -97,7 +108,18 @@ func (s *Syncer) refreshStaleItems(ctx context.Context, owner, repo string, fetc
 			if err := s.db.UpdateItemSourceState(ctx, item.ID, state); err != nil {
 				return fmt.Errorf("updating source state for %s: %w", item.SourceID, err)
 			}
+			updated++
+			s.logger.Info("item state changed",
+				"owner", owner, "repo", repo,
+				"kind", item.Kind, "number", *item.Number,
+				"state", state)
 		}
+	}
+
+	if checked > 0 {
+		s.logger.Debug("refreshed stale items",
+			"owner", owner, "repo", repo,
+			"checked", checked, "updated", updated)
 	}
 
 	return nil
