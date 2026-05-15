@@ -18,6 +18,7 @@ type WorkItem struct {
 	Body      string
 	Author    string
 	Labels    []string
+	State     string // "open", "closed", or "merged" (PR only)
 	HeadRef   string // PR only
 	Diff      string // PR only — populated after FetchPRDiff
 	UpdatedAt time.Time

@@ -60,7 +60,11 @@ func (m *detailModel) updateContent() {
 		number = fmt.Sprintf("#%d", *item.Number)
 	}
 
-	b.WriteString(fmt.Sprintf("# %s %s: %s\n\n", kind, number, item.Title))
+	header := fmt.Sprintf("# %s %s: %s\n\n", kind, number, item.Title)
+	if item.SourceState == "closed" || item.SourceState == "merged" {
+		header = fmt.Sprintf("# %s %s (%s): %s\n\n", kind, number, item.SourceState, item.Title)
+	}
+	b.WriteString(header)
 	b.WriteString(fmt.Sprintf("**Author:** %s  \n", item.Author))
 	labels := ParseLabels(item.Labels)
 	if len(labels) > 0 {

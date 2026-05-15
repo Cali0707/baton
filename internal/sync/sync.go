@@ -41,9 +41,10 @@ func (s *Syncer) syncRepo(ctx context.Context, repo config.RepoConfig) (newCount
 		return 0, 0, err
 	}
 
+	fetchedSourceIDs := make(map[string]bool, len(workItems))
 	for _, wi := range workItems {
 		item := workItemToInboxItem(wi)
-		// Check if item already exists to distinguish new vs updated.
+		fetchedSourceIDs[item.SourceID] = true
 		existing, _ := s.db.GetItemBySourceID(ctx, item.SourceID)
 		if err := s.db.UpsertItem(ctx, &item); err != nil {
 			return newCount, updatedCount, fmt.Errorf("upserting %s: %w", item.SourceID, err)
@@ -55,7 +56,51 @@ func (s *Syncer) syncRepo(ctx context.Context, repo config.RepoConfig) (newCount
 		}
 	}
 
+	if err := s.refreshStaleItems(ctx, repo.Owner, repo.Name, fetchedSourceIDs); err != nil {
+		return newCount, updatedCount, fmt.Errorf("refreshing stale items: %w", err)
+	}
+
 	return newCount, updatedCount, nil
+}
+
+func (s *Syncer) refreshStaleItems(ctx context.Context, owner, repo string, fetchedSourceIDs map[string]bool) error {
+	openItems, err := s.db.ListItemsByRepoAndSourceState(ctx, owner, repo, "open")
+	if err != nil {
+		return err
+	}
+
+	for _, item := range openItems {
+		if fetchedSourceIDs[item.SourceID] {
+			continue
+		}
+		if item.Number == nil {
+			continue
+		}
+
+		var (
+			state    string
+			fetchErr error
+		)
+		switch item.Kind {
+		case "issue":
+			state, fetchErr = s.ghClient.FetchIssueState(ctx, owner, repo, *item.Number)
+		case "pr":
+			state, fetchErr = s.ghClient.FetchPRState(ctx, owner, repo, *item.Number)
+		default:
+			continue
+		}
+		if fetchErr != nil {
+			continue
+		}
+
+		if state != "open" {
+			if err := s.db.UpdateItemSourceState(ctx, item.ID, state); err != nil {
+				return fmt.Errorf("updating source state for %s: %w", item.SourceID, err)
+			}
+		}
+	}
+
+	return nil
 }
 
 // SourceIDForGitHub constructs the natural dedup key for a GitHub work item.
@@ -79,6 +124,11 @@ func workItemToInboxItem(wi ghclient.WorkItem) store.InboxItem {
 	now := time.Now().UTC()
 	updatedAt := wi.UpdatedAt
 
+	sourceState := wi.State
+	if sourceState == "" {
+		sourceState = "open"
+	}
+
 	return store.InboxItem{
 		SourceType:      "github",
 		SourceID:        SourceIDForGitHub(wi.Owner, wi.Repo, string(wi.Kind), wi.Number),
@@ -91,6 +141,7 @@ func workItemToInboxItem(wi ghclient.WorkItem) store.InboxItem {
 		Owner:           wi.Owner,
 		Repo:            wi.Repo,
 		Metadata:        string(metadataJSON),
+		SourceState:     sourceState,
 		Status:          store.ItemStatusNew,
 		SourceUpdatedAt: &updatedAt,
 		CreatedAt:       now,
