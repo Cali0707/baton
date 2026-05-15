@@ -377,16 +377,25 @@ func TestUpsertItem_PreservesLastReviewedAt(t *testing.T) {
 	ctx := context.Background()
 
 	item := testInboxItem("github:org/repo:issue:42")
-	db.UpsertItem(ctx, item)
+	if err := db.UpsertItem(ctx, item); err != nil {
+		t.Fatalf("first UpsertItem() error: %v", err)
+	}
 
 	reviewed := time.Now().UTC().Truncate(time.Second)
-	db.SetLastReviewedAt(ctx, item.ID, reviewed)
+	if err := db.SetLastReviewedAt(ctx, item.ID, reviewed); err != nil {
+		t.Fatalf("SetLastReviewedAt() error: %v", err)
+	}
 
 	item2 := testInboxItem("github:org/repo:issue:42")
 	item2.Title = "Updated from sync"
-	db.UpsertItem(ctx, item2)
+	if err := db.UpsertItem(ctx, item2); err != nil {
+		t.Fatalf("second UpsertItem() error: %v", err)
+	}
 
-	loaded, _ := db.GetItem(ctx, item.ID)
+	loaded, err := db.GetItem(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("GetItem() error: %v", err)
+	}
 	if loaded.LastReviewedAt == nil {
 		t.Fatal("LastReviewedAt should be preserved after re-upsert")
 	}
@@ -426,6 +435,11 @@ func TestInboxItem_IsStaleReview(t *testing.T) {
 		{
 			name: "in_progress, source updated before review",
 			item: InboxItem{Status: ItemStatusInProgress, LastReviewedAt: &later, SourceUpdatedAt: &earlier},
+			want: false,
+		},
+		{
+			name: "in_progress, source updated at same time as review",
+			item: InboxItem{Status: ItemStatusInProgress, LastReviewedAt: &now, SourceUpdatedAt: &now},
 			want: false,
 		},
 		{

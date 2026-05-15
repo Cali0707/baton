@@ -667,8 +667,14 @@ func (m *Model) startAgent(agentName string) (tea.Model, tea.Cmd) {
 	}
 
 	// Update item status and record review timestamp.
-	m.db.UpdateItemStatus(ctx, item.ID, store.ItemStatusInProgress)
-	m.db.SetLastReviewedAt(ctx, item.ID, now)
+	if err := m.db.UpdateItemStatus(ctx, item.ID, store.ItemStatusInProgress); err != nil {
+		m.errMsg = fmt.Sprintf("updating item status: %v", err)
+		return *m, nil
+	}
+	if err := m.db.SetLastReviewedAt(ctx, item.ID, now); err != nil {
+		m.errMsg = fmt.Sprintf("recording review timestamp: %v", err)
+		return *m, nil
+	}
 
 	tracker := agent.NewSessionTracker()
 	cancelCtx, cancel := context.WithCancel(ctx)
