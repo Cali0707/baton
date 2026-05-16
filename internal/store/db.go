@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 	"path/filepath"
 	"strings"
 
@@ -153,6 +154,21 @@ func (d *DB) ListItemsByRepoAndSourceState(ctx context.Context, owner, repo, sou
 		return nil, fmt.Errorf("listing items for %s/%s with source_state %q: %w", owner, repo, sourceState, err)
 	}
 	return items, nil
+}
+
+func (d *DB) SetLastReviewedAt(ctx context.Context, id int64, t time.Time) error {
+	res, err := d.db.ExecContext(ctx, `UPDATE inbox_items SET last_reviewed_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, t, id)
+	if err != nil {
+		return fmt.Errorf("setting last_reviewed_at for item %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("reading rows affected for item %d: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("setting last_reviewed_at for item %d: item not found", id)
+	}
+	return nil
 }
 
 func (d *DB) DeleteItem(ctx context.Context, id int64) error {

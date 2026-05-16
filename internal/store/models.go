@@ -29,8 +29,19 @@ type InboxItem struct {
 	Status          ItemStatus `db:"status"`
 	WorktreePath    string     `db:"worktree_path"`
 	SourceUpdatedAt *time.Time `db:"source_updated_at"`
+	LastReviewedAt  *time.Time `db:"last_reviewed_at"`
 	CreatedAt       time.Time  `db:"created_at"`
 	UpdatedAt       time.Time  `db:"updated_at"`
+}
+
+func (item *InboxItem) IsStaleReview() bool {
+	if item.Status != ItemStatusInProgress {
+		return false
+	}
+	if item.LastReviewedAt == nil || item.SourceUpdatedAt == nil {
+		return false
+	}
+	return item.SourceUpdatedAt.After(*item.LastReviewedAt)
 }
 
 // Run represents a workflow execution attached to an inbox item.

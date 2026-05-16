@@ -348,6 +348,116 @@ func TestOutputEntries(t *testing.T) {
 	}
 }
 
+func TestSetLastReviewedAt(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+
+	item := testInboxItem("github:org/repo:issue:42")
+	db.UpsertItem(ctx, item)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := db.SetLastReviewedAt(ctx, item.ID, now); err != nil {
+		t.Fatalf("SetLastReviewedAt() error: %v", err)
+	}
+
+	loaded, err := db.GetItem(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("GetItem() error: %v", err)
+	}
+	if loaded.LastReviewedAt == nil {
+		t.Fatal("LastReviewedAt should be set")
+	}
+	if !loaded.LastReviewedAt.Truncate(time.Second).Equal(now) {
+		t.Errorf("LastReviewedAt = %v, want %v", loaded.LastReviewedAt, now)
+	}
+}
+
+func TestUpsertItem_PreservesLastReviewedAt(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+
+	item := testInboxItem("github:org/repo:issue:42")
+	if err := db.UpsertItem(ctx, item); err != nil {
+		t.Fatalf("first UpsertItem() error: %v", err)
+	}
+
+	reviewed := time.Now().UTC().Truncate(time.Second)
+	if err := db.SetLastReviewedAt(ctx, item.ID, reviewed); err != nil {
+		t.Fatalf("SetLastReviewedAt() error: %v", err)
+	}
+
+	item2 := testInboxItem("github:org/repo:issue:42")
+	item2.Title = "Updated from sync"
+	if err := db.UpsertItem(ctx, item2); err != nil {
+		t.Fatalf("second UpsertItem() error: %v", err)
+	}
+
+	loaded, err := db.GetItem(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("GetItem() error: %v", err)
+	}
+	if loaded.LastReviewedAt == nil {
+		t.Fatal("LastReviewedAt should be preserved after re-upsert")
+	}
+	if !loaded.LastReviewedAt.Truncate(time.Second).Equal(reviewed) {
+		t.Errorf("LastReviewedAt = %v, want %v (should be preserved)", loaded.LastReviewedAt, reviewed)
+	}
+	if loaded.Title != "Updated from sync" {
+		t.Errorf("Title = %q, want 'Updated from sync'", loaded.Title)
+	}
+}
+
+func TestInboxItem_IsStaleReview(t *testing.T) {
+	now := time.Now().UTC()
+	earlier := now.Add(-time.Hour)
+	later := now.Add(time.Hour)
+
+	tests := []struct {
+		name string
+		item InboxItem
+		want bool
+	}{
+		{
+			name: "not in_progress",
+			item: InboxItem{Status: ItemStatusNew, LastReviewedAt: &earlier, SourceUpdatedAt: &later},
+			want: false,
+		},
+		{
+			name: "in_progress but no LastReviewedAt",
+			item: InboxItem{Status: ItemStatusInProgress, SourceUpdatedAt: &later},
+			want: false,
+		},
+		{
+			name: "in_progress but no SourceUpdatedAt",
+			item: InboxItem{Status: ItemStatusInProgress, LastReviewedAt: &earlier},
+			want: false,
+		},
+		{
+			name: "in_progress, source updated before review",
+			item: InboxItem{Status: ItemStatusInProgress, LastReviewedAt: &later, SourceUpdatedAt: &earlier},
+			want: false,
+		},
+		{
+			name: "in_progress, source updated at same time as review",
+			item: InboxItem{Status: ItemStatusInProgress, LastReviewedAt: &now, SourceUpdatedAt: &now},
+			want: false,
+		},
+		{
+			name: "in_progress, source updated after review (stale)",
+			item: InboxItem{Status: ItemStatusInProgress, LastReviewedAt: &earlier, SourceUpdatedAt: &later},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.item.IsStaleReview(); got != tt.want {
+				t.Errorf("IsStaleReview() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestOpenDB_CreatesDatabase(t *testing.T) {
 	dir := t.TempDir()
 	db, err := OpenDB(dir)
