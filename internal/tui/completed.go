@@ -104,16 +104,17 @@ func (m completedListModel) View() string {
 
 // completedDetailModel shows details of a single completed run.
 type completedDetailModel struct {
-	viewport viewport.Model
-	run      *store.Run
-	entries  []store.OutputEntry
-	ready    bool
-	width    int
-	height   int
+	viewport        viewport.Model
+	run             *store.Run
+	entries         []store.OutputEntry
+	ready           bool
+	width           int
+	height          int
+	markdownEnabled bool
 }
 
 func newCompletedDetailModel() completedDetailModel {
-	return completedDetailModel{}
+	return completedDetailModel{markdownEnabled: true}
 }
 
 func (m *completedDetailModel) setRun(r *store.Run) {
@@ -152,11 +153,16 @@ func (m *completedDetailModel) updateContent() {
 
 	if len(m.entries) > 0 {
 		b.WriteString("\n-- Agent Output ------------------------------------\n\n")
-		b.WriteString(agentOutputStyle.Render(renderEntries(m.entries)))
+		b.WriteString(agentOutputStyle.Render(renderEntries(m.entries, m.markdownEnabled, m.width-2)))
 	}
 
 	m.viewport.SetContent(b.String())
 	m.viewport.GotoTop()
+}
+
+func (m *completedDetailModel) toggleMarkdown() {
+	m.markdownEnabled = !m.markdownEnabled
+	m.updateContent()
 }
 
 func (m *completedDetailModel) setSize(w, h int) {
@@ -193,6 +199,6 @@ func (m completedDetailModel) View() string {
 	b.WriteString("\n")
 	b.WriteString(m.viewport.View())
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("esc back"))
+	b.WriteString(helpStyle.Render("esc back • m markdown"))
 	return b.String()
 }

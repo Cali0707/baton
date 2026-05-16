@@ -396,6 +396,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.focusedAgent = 0
 			m.state = viewInbox
 			return m, nil
+		case msg.String() == "m":
+			if aa, ok := m.activeAgents[m.focusedAgent]; ok {
+				aa.view.toggleMarkdown()
+			}
+			return m, nil
 		default:
 			if aa, ok := m.activeAgents[m.focusedAgent]; ok {
 				var cmd tea.Cmd
@@ -470,6 +475,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case msg.String() == "esc" || msg.String() == "q":
 			m.state = viewInbox
 			return m, nil
+		case msg.String() == "m":
+			m.completedDetail.toggleMarkdown()
+			return m, nil
 		default:
 			var cmd tea.Cmd
 			m.completedDetail, cmd = m.completedDetail.Update(msg)
@@ -504,6 +512,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case msg.String() == "q":
 			m.cancelAllAgents()
 			return m, tea.Quit
+		case msg.String() == "m":
+			m.completedDetail.toggleMarkdown()
+			return m, nil
 		default:
 			var cmd tea.Cmd
 			m.completedDetail, cmd = m.completedDetail.Update(msg)

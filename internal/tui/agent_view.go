@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	acp "github.com/coder/acp-go-sdk"
 	"github.com/Cali0707/baton/internal/store"
@@ -28,20 +29,45 @@ var (
 	messageStyle = lipgloss.NewStyle()
 )
 
+type segmentKind int
+
+const (
+	segMessage segmentKind = iota
+	segThought
+	segTool
+	segPlan
+)
+
+type segment struct {
+	kind     segmentKind
+	raw      string // raw text (markdown source for messages)
+	rendered string // styled output
+}
+
 type agentViewModel struct {
 	viewport viewport.Model
 	spinner  spinner.Model
-	output   strings.Builder
 	running  bool
 	ready    bool
 	width    int
 	height   int
 	title    string
 
-	// State tracking for clean rendering.
-	inThought  bool                       // currently accumulating thought text
-	inMessage  bool                       // currently accumulating message text
-	toolTitles map[acp.ToolCallId]string   // tool call ID → title
+	// Segment-based output.
+	segments        []segment
+	currentKind     segmentKind
+	currentBuf      strings.Builder
+	hasCurrentBlock bool
+
+	// Cached rendering of completed segments.
+	cachedView string
+	cacheStale bool
+
+	// Markdown rendering toggle.
+	markdownEnabled bool
+
+	// Tool call ID → title mapping.
+	toolTitles map[acp.ToolCallId]string
 }
 
 func newAgentViewModel() agentViewModel {
@@ -49,9 +75,10 @@ func newAgentViewModel() agentViewModel {
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(highlight)
 	return agentViewModel{
-		spinner:    s,
-		running:    true,
-		toolTitles: make(map[acp.ToolCallId]string),
+		spinner:         s,
+		running:         true,
+		markdownEnabled: true,
+		toolTitles:      make(map[acp.ToolCallId]string),
 	}
 }
 
@@ -66,48 +93,50 @@ func (m *agentViewModel) appendUpdate(update acp.SessionUpdate) {
 		if c.Text == nil || c.Text.Text == "" {
 			break
 		}
-		// End any open message block before starting thought.
-		if m.inMessage {
-			m.output.WriteString("\n")
-			m.inMessage = false
+		// Flush message block if transitioning from message to thought.
+		if m.hasCurrentBlock && m.currentKind == segMessage {
+			m.flushCurrentBlock()
 		}
-		// Start thought header once, then accumulate text.
-		if !m.inThought {
-			m.output.WriteString(thoughtStyle.Render("  thinking: "))
-			m.inThought = true
+		if !m.hasCurrentBlock {
+			m.currentKind = segThought
+			m.hasCurrentBlock = true
+			m.currentBuf.WriteString("  thinking: ")
 		}
-		m.output.WriteString(thoughtStyle.Render(c.Text.Text))
+		m.currentBuf.WriteString(c.Text.Text)
 
 	case update.AgentMessageChunk != nil:
 		c := update.AgentMessageChunk.Content
 		if c.Text == nil || c.Text.Text == "" {
 			break
 		}
-		// End any open thought block before starting message.
-		if m.inThought {
-			m.output.WriteString("\n\n")
-			m.inThought = false
+		// Flush thought block if transitioning from thought to message.
+		if m.hasCurrentBlock && m.currentKind == segThought {
+			m.flushCurrentBlock()
 		}
-		m.inMessage = true
-		m.output.WriteString(messageStyle.Render(c.Text.Text))
+		if !m.hasCurrentBlock {
+			m.currentKind = segMessage
+			m.hasCurrentBlock = true
+		}
+		m.currentBuf.WriteString(c.Text.Text)
 
 	case update.ToolCall != nil:
-		m.endOpenBlocks()
+		m.flushCurrentBlock()
 		tc := update.ToolCall
 		m.toolTitles[tc.ToolCallId] = tc.Title
 
 		icon := toolIcon(tc.Kind)
 		status := toolStatusStyle.Render(string(tc.Status))
-		m.output.WriteString(fmt.Sprintf("\n  %s %s  %s\n", icon, toolTitleStyle.Render(tc.Title), status))
+		text := fmt.Sprintf("\n  %s %s  %s\n", icon, toolTitleStyle.Render(tc.Title), status)
+		m.segments = append(m.segments, segment{kind: segTool, rendered: text})
+		m.cacheStale = true
 
 	case update.ToolCallUpdate != nil:
-		m.endOpenBlocks()
+		m.flushCurrentBlock()
 		tcu := update.ToolCallUpdate
 		title := string(tcu.ToolCallId)
 		if t, ok := m.toolTitles[tcu.ToolCallId]; ok {
 			title = t
 		}
-		// Update the title mapping if a new title is provided.
 		if tcu.Title != nil {
 			m.toolTitles[tcu.ToolCallId] = *tcu.Title
 			title = *tcu.Title
@@ -123,12 +152,15 @@ func (m *agentViewModel) appendUpdate(update acp.SessionUpdate) {
 			} else if status == "failed" {
 				icon = "  !"
 			}
-			m.output.WriteString(fmt.Sprintf("%s %s  %s\n", icon, toolTitleStyle.Render(title), toolStatusStyle.Render(status)))
+			text := fmt.Sprintf("%s %s  %s\n", icon, toolTitleStyle.Render(title), toolStatusStyle.Render(status))
+			m.segments = append(m.segments, segment{kind: segTool, rendered: text})
+			m.cacheStale = true
 		}
 
 	case update.Plan != nil:
-		m.endOpenBlocks()
-		m.output.WriteString("\n  Plan:\n")
+		m.flushCurrentBlock()
+		var pb strings.Builder
+		pb.WriteString("\n  Plan:\n")
 		for _, entry := range update.Plan.Entries {
 			marker := "  "
 			switch entry.Status {
@@ -139,44 +171,112 @@ func (m *agentViewModel) appendUpdate(update acp.SessionUpdate) {
 			default:
 				marker = "  [ ]"
 			}
-			m.output.WriteString(fmt.Sprintf("%s %s\n", marker, entry.Content))
+			fmt.Fprintf(&pb, "%s %s\n", marker, entry.Content)
 		}
-		m.output.WriteString("\n")
+		pb.WriteString("\n")
+		m.segments = append(m.segments, segment{kind: segPlan, rendered: pb.String()})
+		m.cacheStale = true
 	}
 
-	m.viewport.SetContent(agentOutputStyle.Render(m.output.String()))
+	m.rebuildViewport()
+}
+
+// flushCurrentBlock finalizes the in-progress block as a completed segment.
+func (m *agentViewModel) flushCurrentBlock() {
+	if !m.hasCurrentBlock {
+		return
+	}
+	raw := m.currentBuf.String()
+	m.currentBuf.Reset()
+	m.hasCurrentBlock = false
+
+	seg := segment{kind: m.currentKind, raw: raw}
+	switch m.currentKind {
+	case segMessage:
+		if m.markdownEnabled {
+			seg.rendered = renderMarkdown(raw, m.width-2)
+		} else {
+			seg.rendered = messageStyle.Render(raw)
+		}
+	case segThought:
+		seg.rendered = thoughtStyle.Render(raw)
+	}
+	m.segments = append(m.segments, seg)
+	m.cacheStale = true
+}
+
+// rebuildViewport renders completed segments (cached) plus in-progress text.
+func (m *agentViewModel) rebuildViewport() {
+	if m.cacheStale {
+		var b strings.Builder
+		for i, seg := range m.segments {
+			if i > 0 {
+				b.WriteString(segmentSeparator(m.segments[i-1].kind, seg.kind))
+			}
+			b.WriteString(seg.rendered)
+		}
+		m.cachedView = b.String()
+		m.cacheStale = false
+	}
+
+	var full strings.Builder
+	full.WriteString(m.cachedView)
+
+	if m.hasCurrentBlock {
+		if len(m.segments) > 0 {
+			full.WriteString(segmentSeparator(m.segments[len(m.segments)-1].kind, m.currentKind))
+		}
+		raw := m.currentBuf.String()
+		switch m.currentKind {
+		case segThought:
+			full.WriteString(thoughtStyle.Render(raw))
+		case segMessage:
+			if m.markdownEnabled {
+				full.WriteString(renderMarkdown(raw, m.width-2))
+			} else {
+				full.WriteString(messageStyle.Render(raw))
+			}
+		}
+	}
+
+	m.viewport.SetContent(agentOutputStyle.Render(full.String()))
 	m.viewport.GotoBottom()
 }
 
-// endOpenBlocks closes any in-progress thought or message block.
-func (m *agentViewModel) endOpenBlocks() {
-	if m.inThought {
-		m.output.WriteString("\n")
-		m.inThought = false
+// segmentSeparator returns spacing between two adjacent segment kinds.
+func segmentSeparator(prev, next segmentKind) string {
+	if prev == segThought && next == segMessage {
+		return "\n\n"
 	}
-	if m.inMessage {
-		m.output.WriteString("\n")
-		m.inMessage = false
+	if prev == segMessage && next == segThought {
+		return "\n"
 	}
+	return "\n"
+}
+
+func (m *agentViewModel) toggleMarkdown() {
+	m.markdownEnabled = !m.markdownEnabled
+	for i := range m.segments {
+		if m.segments[i].kind == segMessage {
+			if m.markdownEnabled {
+				m.segments[i].rendered = renderMarkdown(m.segments[i].raw, m.width-2)
+			} else {
+				m.segments[i].rendered = messageStyle.Render(m.segments[i].raw)
+			}
+		}
+	}
+	m.cacheStale = true
+	m.rebuildViewport()
 }
 
 func (m *agentViewModel) setDone() {
-	m.endOpenBlocks()
+	m.flushCurrentBlock()
 	m.running = false
-	m.viewport.SetContent(agentOutputStyle.Render(m.output.String()))
-}
-
-func (m *agentViewModel) reset() {
-	m.output.Reset()
-	m.running = true
-	m.inThought = false
-	m.inMessage = false
-	m.toolTitles = make(map[acp.ToolCallId]string)
-	m.viewport.SetContent("")
-	m.viewport.GotoTop()
+	m.rebuildViewport()
 }
 
 func (m *agentViewModel) setSize(w, h int) {
+	oldWidth := m.width
 	m.width = w
 	m.height = h
 	if !m.ready {
@@ -186,6 +286,15 @@ func (m *agentViewModel) setSize(w, h int) {
 	} else {
 		m.viewport.Width = w
 		m.viewport.Height = h - 4
+	}
+	if oldWidth != w && m.markdownEnabled {
+		for i := range m.segments {
+			if m.segments[i].kind == segMessage {
+				m.segments[i].rendered = renderMarkdown(m.segments[i].raw, w-2)
+			}
+		}
+		m.cacheStale = true
+		m.rebuildViewport()
 	}
 }
 
@@ -219,39 +328,46 @@ func (m agentViewModel) View() string {
 	b.WriteString(m.viewport.View())
 	b.WriteString("\n")
 	if m.running {
-		b.WriteString(helpStyle.Render("esc detach • x cancel • up/down scroll"))
+		b.WriteString(helpStyle.Render("esc detach • x cancel • m markdown • up/down scroll"))
 	} else {
-		b.WriteString(helpStyle.Render("esc back • up/down scroll"))
+		b.WriteString(helpStyle.Render("esc back • m markdown • up/down scroll"))
 	}
 	return b.String()
 }
 
-// renderEntries formats stored output entries with the same styles as the live view.
-func renderEntries(entries []store.OutputEntry) string {
+// renderEntries formats stored output entries, optionally rendering markdown for messages.
+func renderEntries(entries []store.OutputEntry, markdownEnabled bool, width int) string {
 	var b strings.Builder
+	var messageBuf strings.Builder
 	inThought := false
-	inMessage := false
+
+	flushMessage := func() {
+		if messageBuf.Len() == 0 {
+			return
+		}
+		raw := messageBuf.String()
+		messageBuf.Reset()
+		if markdownEnabled {
+			b.WriteString(renderMarkdown(raw, width))
+		} else {
+			b.WriteString(messageStyle.Render(raw))
+		}
+	}
 
 	endBlocks := func() {
 		if inThought {
 			b.WriteString("\n")
 			inThought = false
 		}
-		if inMessage {
-			b.WriteString("\n")
-			inMessage = false
-		}
+		flushMessage()
 	}
 
 	for _, e := range entries {
 		switch e.Type {
 		case "thought":
+			flushMessage()
 			if e.Text == "" {
 				continue
-			}
-			if inMessage {
-				b.WriteString("\n")
-				inMessage = false
 			}
 			if !inThought {
 				b.WriteString(thoughtStyle.Render("  thinking: "))
@@ -267,8 +383,7 @@ func renderEntries(entries []store.OutputEntry) string {
 				b.WriteString("\n\n")
 				inThought = false
 			}
-			inMessage = true
-			b.WriteString(messageStyle.Render(e.Text))
+			messageBuf.WriteString(e.Text)
 
 		case "tool_call":
 			endBlocks()
@@ -306,6 +421,43 @@ func renderEntries(entries []store.OutputEntry) string {
 	}
 	endBlocks()
 	return b.String()
+}
+
+var (
+	mdRenderer      *glamour.TermRenderer
+	mdRendererWidth int
+)
+
+func getMarkdownRenderer(width int) *glamour.TermRenderer {
+	if width <= 0 {
+		width = 80
+	}
+	if mdRenderer != nil && mdRendererWidth == width {
+		return mdRenderer
+	}
+	r, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(width),
+	)
+	if err != nil {
+		return nil
+	}
+	mdRenderer = r
+	mdRendererWidth = width
+	return r
+}
+
+// renderMarkdown renders text as styled terminal markdown using glamour.
+func renderMarkdown(text string, width int) string {
+	r := getMarkdownRenderer(width)
+	if r == nil {
+		return messageStyle.Render(text)
+	}
+	out, err := r.Render(text)
+	if err != nil {
+		return messageStyle.Render(text)
+	}
+	return strings.TrimRight(out, "\n")
 }
 
 // toolIcon returns a short icon string based on tool kind.
