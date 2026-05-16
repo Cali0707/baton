@@ -171,7 +171,7 @@ func (m *agentViewModel) appendUpdate(update acp.SessionUpdate) {
 			default:
 				marker = "  [ ]"
 			}
-			pb.WriteString(fmt.Sprintf("%s %s\n", marker, entry.Content))
+			fmt.Fprintf(&pb, "%s %s\n", marker, entry.Content)
 		}
 		pb.WriteString("\n")
 		m.segments = append(m.segments, segment{kind: segPlan, rendered: pb.String()})
@@ -273,18 +273,6 @@ func (m *agentViewModel) setDone() {
 	m.flushCurrentBlock()
 	m.running = false
 	m.rebuildViewport()
-}
-
-func (m *agentViewModel) reset() {
-	m.segments = nil
-	m.currentBuf.Reset()
-	m.hasCurrentBlock = false
-	m.cachedView = ""
-	m.cacheStale = false
-	m.running = true
-	m.toolTitles = make(map[acp.ToolCallId]string)
-	m.viewport.SetContent("")
-	m.viewport.GotoTop()
 }
 
 func (m *agentViewModel) setSize(w, h int) {
