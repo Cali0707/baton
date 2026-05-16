@@ -157,9 +157,16 @@ func (d *DB) ListItemsByRepoAndSourceState(ctx context.Context, owner, repo, sou
 }
 
 func (d *DB) SetLastReviewedAt(ctx context.Context, id int64, t time.Time) error {
-	_, err := d.db.ExecContext(ctx, `UPDATE inbox_items SET last_reviewed_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, t, id)
+	res, err := d.db.ExecContext(ctx, `UPDATE inbox_items SET last_reviewed_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, t, id)
 	if err != nil {
 		return fmt.Errorf("setting last_reviewed_at for item %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("reading rows affected for item %d: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("setting last_reviewed_at for item %d: item not found", id)
 	}
 	return nil
 }

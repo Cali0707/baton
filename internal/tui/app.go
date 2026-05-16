@@ -667,11 +667,20 @@ func (m *Model) startAgent(agentName string) (tea.Model, tea.Cmd) {
 	}
 
 	// Update item status and record review timestamp.
+	// If these fail after CreateRun succeeded, mark the run as failed to avoid orphans.
 	if err := m.db.UpdateItemStatus(ctx, item.ID, store.ItemStatusInProgress); err != nil {
+		failAt := time.Now().UTC()
+		run.Status = store.StatusFailed
+		run.CompletedAt = &failAt
+		_ = m.db.UpdateRun(ctx, run)
 		m.errMsg = fmt.Sprintf("updating item status: %v", err)
 		return *m, nil
 	}
 	if err := m.db.SetLastReviewedAt(ctx, item.ID, now); err != nil {
+		failAt := time.Now().UTC()
+		run.Status = store.StatusFailed
+		run.CompletedAt = &failAt
+		_ = m.db.UpdateRun(ctx, run)
 		m.errMsg = fmt.Sprintf("recording review timestamp: %v", err)
 		return *m, nil
 	}
